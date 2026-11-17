@@ -1,0 +1,35 @@
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths: [image/**, .github/workflows/image.yml]
+  pull_request:
+    paths: [image/**, .github/workflows/image.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  # Pull requests only build the image. Pushes to main publish it as
+  # ghcr.io/<owner>/fc-agent, tagged latest and sha-<commit>.
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency: image-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build, and publish on push
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/fc-agent"
+          docker build -t "$image:latest" -t "$image:sha-${GITHUB_SHA::7}" -f image/Dockerfile image
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            docker push --all-tags "$image"
+          fi
