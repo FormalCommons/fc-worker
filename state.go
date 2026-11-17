@@ -344,14 +344,13 @@ type review struct {
 	} `json:"commit"`
 }
 
-// verdicts returns each reviewer's latest verdict on the head commit, by
-// login. Reviews come oldest first. Reviews that only comment are not
-// verdicts.
-func verdicts(reviews []review, head string) map[string]review {
-	latest := map[string]review{}
+// verdicts returns each reviewer's latest verdict on the head commit.
+// Reviews come oldest first. Reviews that only comment are not verdicts.
+func verdicts(reviews []review, head string) map[actor]review {
+	latest := map[actor]review{}
 	for _, r := range reviews {
 		if r.Commit.Oid == head && (r.State == "APPROVED" || r.State == "CHANGES_REQUESTED") {
-			latest[r.Author.Login] = r
+			latest[r.Author] = r
 		}
 	}
 	return latest

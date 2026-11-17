@@ -25,16 +25,17 @@ type prompt struct {
 // runJob renders the job's prompt into a file and runs the job's command
 // with it. The prompt is read again for every job, so it can be changed
 // while the worker runs. When the timeout passes or ctx ends, the command
-// gets SIGTERM, and SIGKILL 30 seconds later.
-func runJob(ctx context.Context, c *Config, job string, it Item, why string) error {
+// gets SIGTERM, and SIGKILL 30 seconds later. It reports whether the
+// command started, and how it ended.
+func runJob(ctx context.Context, c *Config, job string, it Item, why string) (started bool, err error) {
 	j := c.Jobs[job]
 	t, err := template.ParseFiles(j.Prompt)
 	if err != nil {
-		return err
+		return false, err
 	}
 	f, err := os.CreateTemp("", "fc-prompt-*.md")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer os.Remove(f.Name())
 	kind := "issue"
@@ -47,7 +48,7 @@ func runJob(ctx context.Context, c *Config, job string, it Item, why string) err
 		err = cerr
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	args := slices.Clone(j.Command)
@@ -60,5 +61,8 @@ func runJob(ctx context.Context, c *Config, job string, it Item, why string) err
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 30 * time.Second
-	return cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	return true, cmd.Wait()
 }

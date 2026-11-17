@@ -86,9 +86,9 @@ Each worker runs one job at a time:
 6. **Release** the claim.
 
 When there is nothing to do, it waits and surveys again. A job whose
-command fails still counts as a round, and the worker waits before it goes
-on, so that a failure that repeats, such as a gateway that is down, does
-not run through the items at once.
+command fails still counts as a round, but not toward `idle_rounds`, and
+the worker waits before it goes on. So a failure that repeats, such as a
+gateway that is down, does not run through the items at once.
 
 The worker also acts on its own, without an agent:
 
@@ -242,7 +242,7 @@ unset or empty, the worker refuses to start.
 | `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
-| `poll` | How long to wait when there is nothing to do. Default `2m`. |
+| `poll` | How long to wait when there is nothing to do, and after an error. Default `2m`. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`

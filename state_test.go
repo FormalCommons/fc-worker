@@ -65,23 +65,23 @@ func TestNext(t *testing.T) {
 
 func TestVerdicts(t *testing.T) {
 	t0 := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	r := func(login, state, commit string, at time.Time) review {
+	r := func(kind, login, state, commit string, at time.Time) review {
 		var v review
-		v.Author.Login, v.State, v.Commit.Oid, v.SubmittedAt = login, state, commit, at
+		v.Author, v.State, v.Commit.Oid, v.SubmittedAt = actor{kind, login}, state, commit, at
 		return v
 	}
 	got := verdicts([]review{
-		r("fc-reviewer", "CHANGES_REQUESTED", "a", t0),
-		r("fc-reviewer", "APPROVED", "b", t0.Add(1*time.Hour)),
-		r("alice", "CHANGES_REQUESTED", "b", t0.Add(2*time.Hour)),
-		r("fc-reviewer", "COMMENTED", "b", t0.Add(3*time.Hour)),
-		r("bob", "CHANGES_REQUESTED", "b", t0.Add(4*time.Hour)),
-		r("bob", "APPROVED", "b", t0.Add(5*time.Hour)),
+		r("Bot", "fc-reviewer", "CHANGES_REQUESTED", "a", t0),
+		r("Bot", "fc-reviewer", "APPROVED", "b", t0.Add(1*time.Hour)),
+		r("User", "fc-reviewer", "CHANGES_REQUESTED", "b", t0.Add(2*time.Hour)), // a person with the App's name
+		r("Bot", "fc-reviewer", "COMMENTED", "b", t0.Add(3*time.Hour)),
+		r("User", "bob", "CHANGES_REQUESTED", "b", t0.Add(4*time.Hour)),
+		r("User", "bob", "APPROVED", "b", t0.Add(5*time.Hour)),
 	}, "b")
-	if v := got["fc-reviewer"]; v.State != "APPROVED" || !v.SubmittedAt.Equal(t0.Add(time.Hour)) {
+	if v := got[actor{"Bot", "fc-reviewer"}]; v.State != "APPROVED" || !v.SubmittedAt.Equal(t0.Add(time.Hour)) {
 		t.Errorf("fc-reviewer: %+v, want the approval of b", v)
 	}
-	if got["alice"].State != "CHANGES_REQUESTED" || got["bob"].State != "APPROVED" || len(got) != 3 {
+	if got[actor{"User", "fc-reviewer"}].State != "CHANGES_REQUESTED" || got[actor{"User", "bob"}].State != "APPROVED" || len(got) != 3 {
 		t.Errorf("verdicts %+v", got)
 	}
 }

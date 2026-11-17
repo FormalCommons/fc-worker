@@ -36,7 +36,8 @@ type Config struct {
 	// worker labels it needs-human. Both limits count from when the item
 	// was last labelled needs-human. Default 20.
 	MaxRounds int `json:"max_rounds"`
-	// Poll is how long to wait when there is nothing to do. Default 2m.
+	// Poll is how long to wait when there is nothing to do, and after an
+	// error. Default 2m.
 	Poll duration `json:"poll"`
 }
 

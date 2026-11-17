@@ -20,8 +20,8 @@ func TestRunJob(t *testing.T) {
 		Command: []string{"sh", "-c", `cp "$1" ` + out, "sh", "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if err := runJob(context.Background(), c, "work", Item{Number: 7, Title: "Do it"}, "ready"); err != nil {
-		t.Fatal(err)
+	if started, err := runJob(context.Background(), c, "work", Item{Number: 7, Title: "Do it"}, "ready"); !started || err != nil {
+		t.Fatal(started, err)
 	}
 	got, _ := os.ReadFile(out)
 	if want := "issue 7 in o/r: Do it (ready)"; string(got) != want {
@@ -42,14 +42,28 @@ func TestRunJobTimeout(t *testing.T) {
 		Timeout: duration{500 * time.Millisecond},
 	}}}
 	start := time.Now()
-	if err := runJob(context.Background(), c, "fix", Item{PR: true, Number: 1}, "checks failed"); err == nil {
-		t.Error("no error from a job that timed out")
+	if started, err := runJob(context.Background(), c, "fix", Item{PR: true, Number: 1}, "checks failed"); !started || err == nil {
+		t.Errorf("started %v, error %v; want a job that started and timed out", started, err)
 	}
 	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("job took %s", d)
 	}
 	if _, err := os.Stat(stopped); err != nil {
 		t.Error("the command did not get SIGTERM")
+	}
+}
+
+func TestRunJobNotStarted(t *testing.T) {
+	dir := t.TempDir()
+	prompt := filepath.Join(dir, "p.md")
+	os.WriteFile(prompt, []byte("p"), 0o600)
+	c := &Config{Jobs: map[string]Job{"work": {
+		Prompt:  prompt,
+		Command: []string{filepath.Join(dir, "missing"), "{prompt}"},
+		Timeout: duration{time.Minute},
+	}}}
+	if started, err := runJob(context.Background(), c, "work", Item{Number: 1}, "ready"); started || err == nil {
+		t.Errorf("started %v, error %v; want a job that did not start", started, err)
 	}
 }
 

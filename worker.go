@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os/exec"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -105,13 +104,13 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 		}
 	default:
 		start := time.Now()
-		err = runJob(ctx, w.c, cand.job, cand.Item, cand.why)
+		var started bool
+		started, err = runJob(ctx, w.c, cand.job, cand.Item, cand.why)
 		log.Printf("%s: %s ended after %s", cand.key(), cand.job, time.Since(start).Round(time.Second))
-		// A job whose command ran is a round, whether or not it
-		// succeeded. One that did not start is not.
-		var exit *exec.ExitError
-		if ctx.Err() == nil && (err == nil || errors.As(err, &exit)) {
-			err = errors.Join(err, w.record(ctx, cand))
+		// A job whose command started is a round, whether or not it
+		// succeeded.
+		if started && ctx.Err() == nil {
+			err = errors.Join(err, w.record(ctx, cand, err))
 		}
 	}
 	if err != nil {
@@ -121,10 +120,12 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 }
 
 // record looks at the item again after a job and comments on it: which job
-// ran and whether it changed anything. These comments count the rounds, and
-// the worker parks the item after idle_rounds rounds in a row that changed
-// nothing, or max_rounds rounds in all.
-func (w *worker) record(ctx context.Context, cand candidate) error {
+// ran, and whether it changed anything or its command failed. These
+// comments count the rounds, and the worker parks the item after
+// idle_rounds rounds in a row that changed nothing, or max_rounds rounds in
+// all. A failed command does not count toward idle_rounds, so that an
+// outage, such as of the gateway, does not park item after item.
+func (w *worker) record(ctx context.Context, cand candidate, jobErr error) error {
 	items, err := survey(ctx, w.gh, w.c)
 	if err != nil {
 		return err
@@ -139,9 +140,14 @@ func (w *worker) record(ctx context.Context, cand candidate) error {
 	}
 	rounds++
 	marker, result := roundMarker, "It changed something."
-	if progress(items[i]) == progress(cand.Item) {
+	switch {
+	case jobErr != nil:
+		idle, result = 0, fmt.Sprintf("Its command failed: %v.", jobErr)
+	case progress(items[i]) == progress(cand.Item):
 		idle++
 		marker, result = idleMarker, fmt.Sprintf("It changed nothing (%d of %d times allowed).", idle, w.c.IdleRounds)
+	default:
+		idle = 0
 	}
 	msg := fmt.Sprintf("%s\nfc-worker %s ran a %s round (%s). %s Round %d of at most %d.",
 		marker, w.c.Name, cand.job, cand.why, result, rounds, w.c.MaxRounds)
