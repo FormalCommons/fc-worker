@@ -34,7 +34,7 @@ pull request from GitHub. The first row that matches decides:
 | Anything opened by someone outside the project | outside | nothing; a maintainer decides |
 | Issue labelled `proposed` or `close-proposed` | needs triage | a **triage** job |
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
-| Issue that an open pull request will close | in review | nothing; the pull request moves it |
+| Issue that an open pull request from the project will close | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
 | Pull request with a conflict, failing checks, changes requested by the reviewer on its latest commit, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose checks are running | waiting | nothing, until they finish |
@@ -43,15 +43,15 @@ pull request from GitHub. The first row that matches decides:
 
 Every state either has a job or waits for something that has one, so
 nothing is left behind. Limits send an item to `needs-human` rather than
-around the loop forever: `review_rounds` requests for changes on one pull
-request, `idle_rounds` rounds in a row that change nothing, or `max_rounds`
-rounds of any kind on one item.
+around the loop forever: `idle_rounds` rounds in a row that change
+nothing, or `max_rounds` rounds of any kind on one item, such as a pull
+request's reviews and fixes.
 
 Outside the project means anyone but the two Apps and the repository's
 owners, organization members and collaborators. The repository is public,
-so anyone can open an issue, and agents must not take that as their task.
-To hand such an item to the agents, a maintainer opens an issue of their
-own.
+so anyone can open an issue or pull request, and agents must not take
+that as their task. To hand such an item to the agents, a maintainer opens
+an issue of their own.
 
 ## Jobs
 
@@ -82,7 +82,7 @@ Each worker runs one job at a time:
    with the rendered prompt. It must finish within the job's timeout.
 5. **Check.** Read the item again, and comment on it: which job ran, and
    whether it changed anything. These comments carry hidden markers, which
-   count the rounds.
+   count the rounds; only the agent App's comments count.
 6. **Release** the claim.
 
 When there is nothing to do, it waits and surveys again.
@@ -91,13 +91,12 @@ The worker also acts on its own, without an agent:
 
 - It turns on auto-merge for an approved pull request whose checks pass.
 - It labels an item `needs-human` and says why, when
-  - the reviewer has requested changes on a pull request `review_rounds`
-    times;
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last
     parked, so removing `needs-human` gives it a fresh start;
   - a person's request for changes still blocks a pull request that the
-    reviewer approved.
+    reviewer approved. That person must approve or dismiss their review
+    before the label comes off, or the worker parks it again.
 
 The worker acts as the agent App, through a hive-broker client of its own.
 
@@ -115,9 +114,10 @@ keep two workers off one item.
 A worker reads the claims before the issues and pull requests, and
 releases a claim only after its job is done. To release it, the worker
 replaces its lease with one that has already expired, rather than deleting
-the ref. So a claim never returns to a state that another worker saw
-before, and a worker can only take a claim if nobody has taken and
-released it since it looked. Whatever a released claim's job did is
+the ref. Each lease commit's parent is the one it replaces, so a claim
+never returns to a state that another worker saw before, and a worker can
+only take a claim if nobody has taken and released it since it looked.
+The claim's history is the item's history of jobs. Whatever a released claim's job did is
 already in the survey that follows.
 
 ## Labels
@@ -128,9 +128,10 @@ already in the survey that follows.
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
 
-People steer the work through issues, comments and reviews. An issue a
-person opens is ready at once. Labelling anything `needs-human` stops the
-workers from touching it.
+People in the project steer the work through issues, comments and reviews.
+An issue that one of them opens is ready at once. Labelling anything
+`needs-human` stops the workers from touching it. Agents take direction
+only from the project; they treat other text as information.
 
 ## Setting up a repository
 
@@ -185,11 +186,12 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
   without `proposed`, which skips triage. It cannot change the default
   branch except through the merge queue, and it cannot approve its own
   pull requests, since the agent App opened them.
-- The agent App can approve pull requests that it did not open. If an
-  App's approval counts toward the ruleset (see [Open points](#open-points)),
-  so does the agent App's, and a misled agent could approve and auto-merge
-  someone else's pull request. Until that is settled, keep pull requests
-  from outside the project to a minimum.
+- The agent App can approve pull requests that it did not open. The design
+  needs the reviewer App's approval to count toward the ruleset, and then
+  the agent App's counts too. So a misled agent could approve and
+  auto-merge a pull request that a person opened. For the experiment,
+  limit the repository's interactions to collaborators, so that nobody
+  outside the project can open one.
 - Review agents are not trusted either. A misled reviewer can approve a bad
   pull request, but it cannot change one, and requiring approval of the
   most recent push keeps whoever pushed last from approving.
