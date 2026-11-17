@@ -36,7 +36,7 @@ pull request from GitHub. The first row that matches decides:
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
 | Issue that an open pull request from the project will close | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
-| Pull request with a conflict, failing checks, changes requested by the reviewer on its latest commit, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
+| Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose checks are running | waiting | nothing, until they finish |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
 | Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it |
@@ -81,8 +81,8 @@ Each worker runs one job at a time:
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
    with the rendered prompt. It must finish within the job's timeout.
 5. **Check.** Read the item again, and comment on it: which job ran, and
-   whether it changed anything. These comments carry hidden markers, which
-   count the rounds; only the agent App's comments count.
+   whether it changed anything. These comments begin with hidden markers,
+   which count the rounds; only the agent App's comments count.
 6. **Release** the claim.
 
 When there is nothing to do, it waits and surveys again.
@@ -117,8 +117,8 @@ replaces its lease with one that has already expired, rather than deleting
 the ref. Each lease commit's parent is the one it replaces, so a claim
 never returns to a state that another worker saw before, and a worker can
 only take a claim if nobody has taken and released it since it looked.
-The claim's history is the item's history of jobs. Whatever a released claim's job did is
-already in the survey that follows.
+The claim's history is the item's history of jobs. Whatever a released
+claim's job did is already in the survey that follows.
 
 ## Labels
 
@@ -190,8 +190,8 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
   needs the reviewer App's approval to count toward the ruleset, and then
   the agent App's counts too. So a misled agent could approve and
   auto-merge a pull request that a person opened. For the experiment,
-  limit the repository's interactions to collaborators, so that nobody
-  outside the project can open one.
+  limit the repository's interactions to collaborators, for up to six
+  months, so that nobody outside the project can open one.
 - Review agents are not trusted either. A misled reviewer can approve a bad
   pull request, but it cannot change one, and requiring approval of the
   most recent push keeps whoever pushed last from approving.
@@ -215,3 +215,5 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
 - Without the Workflows permission, the agent App cannot push commits that
   change workflow files. So a fix job cannot merge in a base branch whose
   workflows changed since the pull request began.
+- Whether the Apps can still comment and review while the repository's
+  interactions are limited to collaborators.
