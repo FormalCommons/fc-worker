@@ -45,8 +45,8 @@ type Config struct {
 	// error. Default 2m.
 	Poll duration `json:"poll"`
 	// Logs is a directory for the jobs' output: each job's standard output
-	// goes to a file of its own there. Without it, jobs' output goes to the
-	// worker's own.
+	// goes to a file of its own there, which the worker never deletes.
+	// Without it, jobs' output goes to the worker's own.
 	Logs string `json:"logs"`
 }
 
@@ -120,6 +120,9 @@ func (c *Config) expandEnv() error {
 	}
 	for _, s := range []*string{&c.Repo, &c.Name, &c.Broker.URL, &c.Broker.Token, &c.Agent, &c.Reviewer, &c.Logs} {
 		expand(s)
+	}
+	for i := range c.Maintainers {
+		expand(&c.Maintainers[i])
 	}
 	for name, j := range c.Jobs {
 		expand(&j.Prompt)

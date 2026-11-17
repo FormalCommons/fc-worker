@@ -65,8 +65,11 @@ func runJob(ctx context.Context, c *Config, job string, it Item, why string) (st
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if c.Logs != "" {
 		key := candidate{Item: it}.key()
-		name := fmt.Sprintf("%s-%s-%s.log", time.Now().UTC().Format("20060102T150405Z"), key, job)
-		out, err := os.OpenFile(filepath.Join(c.Logs, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		file := fmt.Sprintf("%s-%s-%s-%s.log", time.Now().UTC().Format("20060102T150405Z"), c.Name, key, job)
+		if err := os.MkdirAll(c.Logs, 0o700); err != nil {
+			return false, err
+		}
+		out, err := os.OpenFile(filepath.Join(c.Logs, file), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return false, err
 		}

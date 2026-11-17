@@ -100,15 +100,15 @@ func next(it Item, c *Config) (job, why string) {
 		return "review", "latest commit not reviewed"
 	case !it.Ours:
 		return "", "approved; its author decides when to merge"
-	// The reviewer approved. Decision says whether GitHub counts that:
-	// CHANGES_REQUESTED while anyone's request for changes stands, and
-	// REVIEW_REQUIRED if the reviewer's approval does not count, such as
-	// when its App lacks write access. Either way the merge queue would
-	// never take the pull request.
+	// The reviewer approved. Decision says whether that is enough for
+	// GitHub: CHANGES_REQUESTED while anyone's request for changes stands,
+	// and REVIEW_REQUIRED if the reviewer's approval does not count, as
+	// when its App lacks write access, or the ruleset requires more. Either
+	// way the merge queue would never take the pull request.
 	case it.Decision == "CHANGES_REQUESTED":
 		return park, "approved by the reviewer, but a person's request for changes stands"
 	case it.Decision == "REVIEW_REQUIRED":
-		return park, "approved by the reviewer, but GitHub does not count the approval toward the required reviews"
+		return park, "approved by the reviewer, but GitHub still requires a review: the reviewer's approval does not count, or more are required"
 	case !it.AutoMerge && !it.Queued:
 		return autoMerge, "approved"
 	}

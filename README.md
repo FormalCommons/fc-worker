@@ -50,9 +50,8 @@ request's reviews and fixes.
 
 Outside the project means anyone but the two Apps, the `maintainers` in the
 config, and the repository's owners, organization members and
-collaborators. The repository is public,
-so anyone can open an issue or pull request, and agents must not take
-that as their task. To hand such an item to the agents, a maintainer opens
+collaborators. The repository is public, so anyone can open an issue or
+pull request, and agents must not take that as their task. To hand such an item to the agents, a maintainer opens
 an issue of their own.
 
 ## Jobs
@@ -157,9 +156,9 @@ only from the project; they treat other text as information.
    Two Apps are needed because GitHub does not let a pull request's author
    approve it. The reviewer App's approval counts toward a required
    approval only if the App has write access to Contents. Its hive-broker
-   client asks for Contents: read only, so review jobs can approve but not
-   push. Issues: write lets review jobs create issues for the work they
-   find.
+   must limit the review jobs' client to Contents: read, so that they can
+   approve but not push. Issues: write lets review jobs create issues for
+   the work they find.
 2. Add CI that runs on `pull_request` and `merge_group`, uses no secrets,
    and gives `GITHUB_TOKEN` read access only. In the repository's Actions
    settings, make `GITHUB_TOKEN` read-only by default and do not let
@@ -208,10 +207,12 @@ fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-lis
 
 The worker logs a line when a job starts and when it ends. A job's
 standard output goes to a file of its own in the `logs` directory, named
-for when it started, the item and the job, such as
-`20261117T193345Z-pr-12-review.log`; without `logs`, the worker passes it
-through. A job's standard error always goes to the worker's. SIGTERM or SIGINT stops it: a running job gets
-SIGTERM, and the worker releases its claim before it exits.
+for when it started, the worker, the item and the job, such as
+`20261117T193345Z-vps1-a-pr-12-review.log`; without `logs`, the worker
+passes it through. The worker never deletes these files. A job's standard
+error always goes to the worker's. SIGTERM or SIGINT stops the worker: a
+running job gets SIGTERM, and the worker releases its claim before it
+exits.
 
 ### Configuration
 
@@ -254,7 +255,7 @@ unset or empty, the worker refuses to start.
 | `name` | This worker, in claims and comments. Give every worker its own name. |
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
-| `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. |
+| `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
 | `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
@@ -296,7 +297,8 @@ name and email for its commits.
 - A known weak point: review agents build and run the code under review,
   in their own container, which holds the reviewer's broker token and a
   gateway token. So a pull request written to do so could take GitHub
-  tokens as the reviewer and approve itself, though it still cannot push.
+  tokens as the reviewer and approve itself. It still cannot push, as long
+  as the reviewer's broker limits its client to Contents: read.
   Keeping the tokens out of the container would not help, since the code
   could still write the reviewer's verdict. The fix is to run the code
   under review outside the reviewer's sandbox. Until then this relies on
@@ -313,7 +315,9 @@ name and email for its commits.
 ## Open points
 
 - An approved pull request with auto-merge on that the merge queue does not
-  take, for a reason other than those above, waits without a limit.
+  take, for a reason other than those above, waits without a limit. So
+  does a pull request whose mergeability GitHub never works out, though
+  every survey asks it to.
 - Issues that block each other, or are each other's sub-issues, wait
   forever. Nothing detects such a cycle yet.
 - Without the Workflows permission, the agent App cannot push commits that

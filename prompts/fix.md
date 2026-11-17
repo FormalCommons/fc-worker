@@ -16,6 +16,7 @@ Find out what is wrong:
   branch the pull request targets) and resolve it.
 - Removed from the merge queue: its checks failed together with newer
   commits on the base branch. Merge the base branch and fix what breaks.
+  Do the same if a review says it breaks when merged with the base branch.
 
 Read the issue the pull request closes or is part of, so that the fix
 still does what the issue asks.

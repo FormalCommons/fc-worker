@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,15 @@ func TestLoadConfig(t *testing.T) {
 	}
 	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" {
 		t.Errorf("defaults %d %d %v %q", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs)
+	}
+
+	t.Setenv("TEST_MAINTAINER", "bob")
+	c, err = loadConfig(writeConfig(t, strings.Replace(testConfig, `"name": "w1"`, `"name": "w1", "maintainers": ["alice", "${TEST_MAINTAINER}"]`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.Maintainers, []string{"alice", "bob"}) {
+		t.Errorf("maintainers %q", c.Maintainers)
 	}
 }
 

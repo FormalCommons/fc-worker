@@ -33,9 +33,8 @@ func TestRunJobLogs(t *testing.T) {
 	dir := t.TempDir()
 	prompt := filepath.Join(dir, "p.md")
 	os.WriteFile(prompt, []byte("p"), 0o600)
-	logs := filepath.Join(dir, "logs")
-	os.Mkdir(logs, 0o700)
-	c := &Config{Logs: logs, Jobs: map[string]Job{"review": {
+	logs := filepath.Join(dir, "logs") // the worker creates it
+	c := &Config{Name: "w1", Logs: logs, Jobs: map[string]Job{"review": {
 		Prompt:  prompt,
 		Command: []string{"sh", "-c", "echo transcript; echo status >&2", "{prompt}"},
 		Timeout: duration{time.Minute},
@@ -43,12 +42,23 @@ func TestRunJobLogs(t *testing.T) {
 	if started, err := runJob(context.Background(), c, "review", Item{PR: true, Number: 3}, "latest commit not reviewed"); !started || err != nil {
 		t.Fatal(started, err)
 	}
-	files, _ := filepath.Glob(filepath.Join(logs, "*-pr-3-review.log"))
+	files, _ := filepath.Glob(filepath.Join(logs, "*-w1-pr-3-review.log"))
 	if len(files) != 1 {
 		t.Fatalf("log files %v, want one", files)
 	}
 	if got, _ := os.ReadFile(files[0]); string(got) != "transcript\n" {
 		t.Errorf("log %q, want only the standard output", got)
+	}
+
+	// A log that cannot be created stops the job before it starts.
+	ran := filepath.Join(dir, "ran")
+	c.Logs = filepath.Join(prompt, "logs") // under a file
+	c.Jobs["review"] = Job{Prompt: prompt, Command: []string{"touch", ran, "{prompt}"}, Timeout: duration{time.Minute}}
+	if started, err := runJob(context.Background(), c, "review", Item{PR: true, Number: 3}, "latest commit not reviewed"); started || err == nil {
+		t.Errorf("started %v, error %v; want a job that did not start", started, err)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the command ran")
 	}
 }
 

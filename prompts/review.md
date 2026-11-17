@@ -35,9 +35,9 @@ Then submit exactly one review:
 If you find work that is worth doing but does not belong in this pull
 request, such as a gap that the issue did not foresee, or something
 elsewhere in the repository that this pull request makes out of date,
-check that no open issue covers it (`gh issue list`), create an issue for
-it with `gh issue create --label proposed`, and name the issue in your
-review. Small suggestions go in the review, not in issues. If creating the
+check that no open issue covers it (`gh issue list --search "…"`),
+create an issue for it with `gh issue create --label proposed`, and name
+the issue in your review. Small suggestions go in the review, not in issues. If creating the
 issue fails, describe the work in your review instead.
 
 Rules:

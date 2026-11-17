@@ -37,8 +37,8 @@ Then make progress on the issue in one of these ways:
   already, a duplicate or mistaken, comment why and label it
   `close-proposed`. Do not close it yourself. Give the evidence, so that
   others can check it quickly. If it is done already, say for each thing
-  it asks for where it is done: the file and the name of the definition or
-  theorem, and the pull request or issue that did it.
+  it asks for where it is done: the file and the name of the definition,
+  function or theorem, and the pull request or issue that did it.
 
 Finish with a short comment on the issue that says what you did.
 
