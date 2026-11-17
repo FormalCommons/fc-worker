@@ -29,6 +29,29 @@ func TestRunJob(t *testing.T) {
 	}
 }
 
+func TestRunJobLogs(t *testing.T) {
+	dir := t.TempDir()
+	prompt := filepath.Join(dir, "p.md")
+	os.WriteFile(prompt, []byte("p"), 0o600)
+	logs := filepath.Join(dir, "logs")
+	os.Mkdir(logs, 0o700)
+	c := &Config{Logs: logs, Jobs: map[string]Job{"review": {
+		Prompt:  prompt,
+		Command: []string{"sh", "-c", "echo transcript; echo status >&2", "{prompt}"},
+		Timeout: duration{time.Minute},
+	}}}
+	if started, err := runJob(context.Background(), c, "review", Item{PR: true, Number: 3}, "latest commit not reviewed"); !started || err != nil {
+		t.Fatal(started, err)
+	}
+	files, _ := filepath.Glob(filepath.Join(logs, "*-pr-3-review.log"))
+	if len(files) != 1 {
+		t.Fatalf("log files %v, want one", files)
+	}
+	if got, _ := os.ReadFile(files[0]); string(got) != "transcript\n" {
+		t.Errorf("log %q, want only the standard output", got)
+	}
+}
+
 func TestRunJobTimeout(t *testing.T) {
 	dir := t.TempDir()
 	prompt := filepath.Join(dir, "p.md")

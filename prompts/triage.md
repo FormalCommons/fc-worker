@@ -24,8 +24,9 @@ If the issue is labelled `proposed`, an agent created it. Decide whether it
 is needed, whether it repeats another issue, and whether it is clear enough
 to work on: a goal, and a way to tell when it is done.
 
-- If it is all three, edit it if it needs it (`gh issue edit`), and remove
-  the label: `gh issue edit {{.Number}} --remove-label proposed`.
+- If it is all three, edit it if it needs it (`gh issue edit`), comment in
+  a line or two what you checked, and remove the label:
+  `gh issue edit {{.Number}} --remove-label proposed`.
 - If not, comment why and close it:
   `gh issue close {{.Number}} --reason "not planned"`, or
   `--reason duplicate` with a comment that names the other issue.
@@ -33,8 +34,10 @@ to work on: a goal, and a way to tell when it is done.
 If the issue is labelled `close-proposed`, an agent says it needs no
 change. Check its reasons, in the comments, against the repository.
 
-- If they are right, close it with a comment:
-  `gh issue close {{.Number}} --reason completed`, or `"not planned"`.
+- If they are right, comment with what you checked, close it
+  (`gh issue close {{.Number}} --reason completed`, or `"not planned"`),
+  and remove the label:
+  `gh issue edit {{.Number}} --remove-label close-proposed`.
 - If not, comment why it still needs work, and remove the label:
   `gh issue edit {{.Number}} --remove-label close-proposed`.
 

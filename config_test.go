@@ -42,8 +42,8 @@ func TestLoadConfig(t *testing.T) {
 	if c.Jobs["review"].Timeout.Duration != 30*time.Minute {
 		t.Errorf("review timeout %v", c.Jobs["review"].Timeout)
 	}
-	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute {
-		t.Errorf("defaults %d %d %v", c.IdleRounds, c.MaxRounds, c.Poll)
+	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" {
+		t.Errorf("defaults %d %d %v %q", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs)
 	}
 }
 
@@ -58,6 +58,7 @@ func TestConfigErrors(t *testing.T) {
 		{`"10m"`, `"ten"`, "duration"},
 		{`"name": "w1"`, `"name": "w 1"`, "name"},
 		{`"repo"`, `"repository"`, "unknown field"},
+		{`"name": "w1"`, `"name": "w1", "maintainers": ["fc-agent[bot]"]`, "maintainers"},
 	} {
 		_, err := loadConfig(writeConfig(t, strings.Replace(testConfig, tc.old, tc.new, 1)))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

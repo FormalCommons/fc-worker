@@ -42,6 +42,11 @@ func main() {
 		}
 		return
 	}
+	if c.Logs != "" {
+		if err := os.MkdirAll(c.Logs, 0o700); err != nil {
+			log.Fatal(err)
+		}
+	}
 	log.Printf("fc-worker %s working on %s", c.Name, c.Repo)
 	for ctx.Err() == nil {
 		// After an error, wait before trying again, so that a failure

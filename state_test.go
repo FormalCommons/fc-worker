@@ -50,7 +50,13 @@ func TestNext(t *testing.T) {
 		{"approved", ours(Item{Review: "APPROVED"}), autoMerge},
 		{"approved, auto-merge on", ours(Item{Review: "APPROVED", AutoMerge: true}), ""},
 		{"approved, queued", ours(Item{Review: "APPROVED", Queued: true}), ""},
-		{"approved, blocked by a person", ours(Item{Review: "APPROVED", Blocked: true}), park},
+		{"approved, blocked by a person", ours(Item{Review: "APPROVED", Decision: "CHANGES_REQUESTED"}), park},
+		{"approved, approval does not count", ours(Item{Review: "APPROVED", Decision: "REVIEW_REQUIRED"}), park},
+		{"approved, auto-merge on, approval does not count", ours(Item{Review: "APPROVED", Decision: "REVIEW_REQUIRED", AutoMerge: true}), park},
+		{"approved, approval counts", ours(Item{Review: "APPROVED", Decision: "APPROVED"}), autoMerge},
+		{"mergeability unknown, approved", ours(Item{MergeUnknown: true, Review: "APPROVED"}), ""},
+		{"mergeability unknown, not reviewed", ours(Item{MergeUnknown: true}), ""},
+		{"mergeability unknown, checks failed", ours(Item{MergeUnknown: true, Checks: "FAILURE"}), "fix"},
 
 		{"person's PR, not reviewed", Item{PR: true, Checks: "SUCCESS"}, "review"},
 		{"person's PR, conflict", Item{PR: true, Conflict: true}, ""},
@@ -87,7 +93,7 @@ func TestVerdicts(t *testing.T) {
 }
 
 func TestOutside(t *testing.T) {
-	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]"}
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}}
 	for _, tc := range []struct {
 		author      *actor
 		association string
@@ -102,6 +108,8 @@ func TestOutside(t *testing.T) {
 		{&actor{"User", "mallory"}, "CONTRIBUTOR", true},
 		{&actor{"Bot", "other-app"}, "NONE", true},
 		{nil, "NONE", true},
+		{&actor{"User", "Maint"}, "NONE", false}, // a maintainer whose membership is private
+		{&actor{"Bot", "maint"}, "NONE", true},   // an App with a maintainer's name
 	} {
 		if got := outside(tc.author, tc.association, c); got != tc.want {
 			t.Errorf("%v %s: outside %v, want %v", tc.author, tc.association, got, tc.want)
