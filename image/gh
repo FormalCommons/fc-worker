@@ -2,4 +2,5 @@
 # Runs gh with a token from hive-broker, fetched for every call, since a
 # token lasts at most an hour and a job may last longer.
 set -eu
-GH_TOKEN=$(fc-token) exec /opt/gh/bin/gh "$@"
+token=$(fc-token)
+GH_TOKEN=$token exec /opt/gh/bin/gh "$@"

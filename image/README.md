@@ -12,7 +12,9 @@ The image that fc-worker's jobs run in:
   `lean-toolchain` picks one, and elan installs it on first use.
 
 CI publishes it as `ghcr.io/formalcommons/fc-agent`, tagged `latest` and
-`sha-` plus the commit. It is built for linux/amd64 only.
+`sha-` plus the commit. It is built for linux/amd64 only. A new package on
+GitHub starts private: make it public in its package settings, or log
+worker hosts in with `podman login ghcr.io`.
 
 ## Environment
 
@@ -32,5 +34,9 @@ and Mathlib's build cache again. Two mounts keep them on the host:
 | `/opt/elan/toolchains` | Lean toolchains |
 | `/home/node/.cache/mathlib` | Mathlib's downloaded build cache |
 
-Both are written by every job that mounts them, so mount them only into
-jobs that may share them.
+Both hold programs that jobs run, such as `lean`, `lake` and `leantar`,
+and any job that can write to them can change those programs for the jobs
+after it. So mount them writable only into work, fix and triage jobs, which
+run as the same App anyway, and read-only into review jobs, or not at
+all. Otherwise a misled work agent could plant a program that runs with
+the reviewer's token.
