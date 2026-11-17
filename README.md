@@ -275,6 +275,14 @@ name and email for its commits.
 - Review agents are not trusted either. A misled reviewer can approve a bad
   pull request, but it cannot change one, and requiring approval of the
   most recent push keeps whoever pushed last from approving.
+- **A known weak point:** review agents build and run the code under
+  review, in their own container, with the reviewer's token. So a pull
+  request written to do so could approve itself, or use that token for up
+  to an hour. Keeping the token out of the container would not help, since
+  the code could still speak for the reviewer. The fix is to run the code
+  under review outside the reviewer's sandbox. Until then this relies on
+  every agent and prompt being the project's own, and on the repository
+  being limited to collaborators.
 - Agents cannot change the workflow files, but CI runs the build scripts
   on their branches. That is why CI gets no secrets and a read-only
   `GITHUB_TOKEN`.
