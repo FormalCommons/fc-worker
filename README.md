@@ -26,29 +26,31 @@ short-lived GitHub tokens from hive-broker.
 ```
 
 Each time a worker looks, it works out the state of every open issue and
-pull request from GitHub:
+pull request from GitHub. The first row that matches decides:
 
 | Item | State | Next |
 |---|---|---|
+| Anything labelled `needs-human`, and draft pull requests | parked | nothing; a person decides |
 | Issue labelled `proposed` or `close-proposed` | needs triage | a **triage** job |
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
 | Issue that an open pull request will close | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
-| Pull request with a conflict, failing checks, changes requested on its latest commit, or removed from the merge queue since its approval | needs fix | a **fix** job |
+| Pull request with a conflict, failing checks, changes requested by the reviewer on its latest commit, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose checks are running | waiting | nothing, until they finish |
-| Pull request whose latest commit has no review from the reviewer | needs review | a **review** job |
-| Pull request approved on its latest commit, with checks passing | approved | auto-merge, so the merge queue takes it |
-| Anything labelled `needs-human`, and draft pull requests | parked | nothing; a person decides |
+| Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
+| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it |
 
 Every state either has a job or waits for something that has one, so
 nothing is left behind. Limits send an item to `needs-human` rather than
-around the loop forever.
+around the loop forever: `review_rounds` requests for changes on one pull
+request, `idle_rounds` rounds that change nothing, or `max_rounds` rounds
+of any kind on one item.
 
 ## Jobs
 
 | Job | For | Runs as | The agent |
 |---|---|---|---|
-| work | a ready issue | the agent App | makes progress on the issue: opens a pull request that closes it, adds issues for what it needs first (as sub-issues or blockers, labelled `proposed`), or both. If the issue needs no code, it labels it `close-proposed` and says why. |
+| work | a ready issue | the agent App | makes progress on the issue: opens a pull request that closes it, or adds issues for what it needs first (as sub-issues or blockers, labelled `proposed`), with a pull request for what it can do now that says "Part of #N" rather than closing the issue. If the issue needs no code, it labels it `close-proposed` and says why. |
 | fix | a pull request that needs fixing | the agent App | pushes commits to the pull request's branch that address the reviews, failing checks or conflict. |
 | review | a pull request that needs review | the reviewer App | reviews the latest commit and approves or requests changes. |
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
@@ -62,16 +64,16 @@ requests get reviews, and their authors fix them.
 
 Each worker runs one job at a time:
 
-1. **Survey.** Read the open issues and pull requests, and the claims, with
-   two GraphQL queries.
+1. **Survey.** Read the claims with git, then the open issues and pull
+   requests with GraphQL.
 2. **Pick.** Choose the first unclaimed job, in this order: fix, review,
    triage, work. Within each, oldest first.
 3. **Claim** the item (see [Claims](#claims)). If another worker was faster,
    pick again.
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
    with the rendered prompt. It must finish within the job's timeout.
-5. **Check.** Read the item again. If nothing changed, comment that the
-   round made no progress.
+5. **Check.** Read the item again, and comment on it: which job ran, and
+   whether it changed anything. These comments count the rounds.
 6. **Release** the claim.
 
 When there is nothing to do, it waits and surveys again.
@@ -80,10 +82,14 @@ The worker also acts on its own, without an agent:
 
 - It turns on auto-merge for an approved pull request whose checks pass.
 - It labels an item `needs-human` and says why, when
-  - a pull request has had changes requested `review_rounds` times;
-  - an item has had `idle_rounds` rounds without progress;
+  - the reviewer has requested changes on a pull request `review_rounds`
+    times;
+  - an item has had `idle_rounds` rounds that changed nothing, or
+    `max_rounds` rounds in all;
   - a person's request for changes still blocks a pull request that the
     reviewer approved.
+
+The worker acts as the agent App, through a hive-broker client of its own.
 
 ## Claims
 
@@ -95,6 +101,10 @@ changed since the worker looked, so two workers can never both take it.
 A claim lasts for the job's timeout plus a margin; a worker that dies loses
 its claims when they expire. Nothing else depends on claims: they only
 keep two workers off one item.
+
+A worker reads the claims before the issues and pull requests, and
+releases a claim only after its job is done. So whatever a released claim's
+job did is already in the survey that follows.
 
 ## Labels
 
@@ -115,16 +125,19 @@ workers from touching it.
 
    | App | Repository permissions |
    |---|---|
-   | agent | Contents, Issues and Pull requests: read and write. Actions, Checks, Commit statuses: read. No Workflows, so no agent can change CI. |
-   | reviewer | Pull requests and Contents: read and write. Issues, Checks, Commit statuses: read. |
+   | agent | Contents, Issues and Pull requests: read and write. Actions, Checks, Commit statuses: read. No Workflows, so no agent can change the workflow files. |
+   | reviewer | Pull requests: read and write. Contents, Issues, Checks, Commit statuses: read. It can review, but not push. |
 
    Two Apps are needed because GitHub does not let a pull request's author
    approve it.
-2. Add CI that runs on `pull_request` and `merge_group`.
+2. Add CI that runs on `pull_request` and `merge_group`, uses no secrets,
+   and gives `GITHUB_TOKEN` read access only. In the repository's Actions
+   settings, make `GITHUB_TOKEN` read-only by default and do not let
+   Actions approve pull requests.
 3. Protect the default branch with a ruleset: require a pull request with
-   one approval, dismiss approvals on new commits, require the CI checks,
-   and require the merge queue. Allow auto-merge in the repository's
-   settings.
+   one approval, dismiss approvals on new commits, require approval of the
+   most recent push, require the CI checks, and require the merge queue.
+   Allow auto-merge in the repository's settings.
 4. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
 5. Open the first issue, such as "Formalize the plan in PLAN.md". The first
@@ -154,19 +167,27 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
 - An agent holds a broker token for its job's client and, through it,
   GitHub tokens that last at most an hour and only have its job's
   permissions. A misled agent can do with them what its job could: for
-  example, close issues or push to another agent's branch. It cannot merge
-  without an approval from the reviewer, change the default branch except
-  through the merge queue, or change CI.
+  example, close issues, push to another agent's branch, or create issues
+  without `proposed`, which skips triage. It cannot merge without an
+  approval from the reviewer, or change the default branch except through
+  the merge queue.
+- Review agents are not trusted either. A misled reviewer can approve a bad
+  pull request, but it cannot change one, and requiring approval of the
+  most recent push keeps whoever pushed last from approving.
+- Agents cannot change the workflow files, but CI runs the build scripts
+  on their branches. That is why CI gets no secrets and a read-only
+  `GITHUB_TOKEN`.
 - The worker holds the broker token for the workers' client. It runs on the
   host, not in a container, and is trusted.
 - The gateway and the broker serve plain HTTP. Keep them on a private
   network.
 
-## Not yet checked
+## Open points
 
-- That the reviewer App's approval counts toward the ruleset's required
-  approval.
-- That turning on auto-merge for an approved pull request whose checks
+- Whether the reviewer App's approval counts toward the ruleset's required
+  approval, with only read access to Contents.
+- Whether turning on auto-merge for an approved pull request whose checks
   pass puts it in the merge queue, or whether the worker must add it to the
   queue itself.
-- That GraphQL lists refs under `refs/fc-claims/`.
+- Issues that block each other, or are each other's sub-issues, wait
+  forever. Nothing detects such a cycle yet.
