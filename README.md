@@ -275,11 +275,12 @@ name and email for its commits.
 - Review agents are not trusted either. A misled reviewer can approve a bad
   pull request, but it cannot change one, and requiring approval of the
   most recent push keeps whoever pushed last from approving.
-- **A known weak point:** review agents build and run the code under
-  review, in their own container, with the reviewer's token. So a pull
-  request written to do so could approve itself, or use that token for up
-  to an hour. Keeping the token out of the container would not help, since
-  the code could still speak for the reviewer. The fix is to run the code
+- A known weak point: review agents build and run the code under review,
+  in their own container, which holds the reviewer's broker token and a
+  gateway token. So a pull request written to do so could take GitHub
+  tokens as the reviewer and approve itself, though it still cannot push.
+  Keeping the tokens out of the container would not help, since the code
+  could still write the reviewer's verdict. The fix is to run the code
   under review outside the reviewer's sandbox. Until then this relies on
   every agent and prompt being the project's own, and on the repository
   being limited to collaborators.
