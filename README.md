@@ -37,9 +37,10 @@ pull request from GitHub. The first row that matches decides:
 | Issue that an open pull request from the project will close | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
 | Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
+| Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
-| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides |
+| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it |
 
 Every state either has a job or waits for something that has one, so
 nothing is left behind. Limits send an item to `needs-human` rather than
@@ -47,10 +48,10 @@ around the loop forever: `idle_rounds` rounds in a row that change
 nothing, or `max_rounds` rounds of any kind on one item, such as a pull
 request's reviews and fixes.
 
-Outside the project means anyone but the two Apps and the repository's
-owners, organization members and collaborators. The repository is public,
-so anyone can open an issue or pull request, and agents must not take
-that as their task. To hand such an item to the agents, a maintainer opens
+Outside the project means anyone but the two Apps, the `maintainers` in the
+config, and the repository's owners, organization members and
+collaborators. The repository is public, so anyone can open an issue or
+pull request, and agents must not take that as their task. To hand such an item to the agents, a maintainer opens
 an issue of their own.
 
 ## Jobs
@@ -59,7 +60,7 @@ an issue of their own.
 |---|---|---|---|
 | work | a ready issue | the agent App | makes progress on the issue in one of three ways: opens a pull request that closes it; splits it into new issues, labelled `proposed`, as its sub-issues or blockers; or, if it needs no change, labels it `close-proposed` and says why. |
 | fix | a pull request that needs fixing | the agent App | pushes commits to the pull request's branch that address the reviews, failing checks or conflict. |
-| review | a pull request that needs review | the reviewer App | reviews the latest commit and approves or requests changes. |
+| review | a pull request that needs review | the reviewer App | reviews the latest commit, merged with the latest base branch, and approves or requests changes. Work it finds that belongs in another pull request becomes a new issue, labelled `proposed`. |
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
 
 Each job is one fresh agent in a fresh container, started with the job's
@@ -93,7 +94,8 @@ gateway that is down, does not run through the items at once.
 The worker also acts on its own, without an agent:
 
 - It turns on auto-merge for an approved pull request that the agent App
-  opened. If that fails, it parks the pull request.
+  opened, which puts it in the merge queue as soon as the ruleset allows.
+  If that fails, it parks the pull request.
 - It labels an item `needs-human` and says why, when
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last
@@ -101,7 +103,10 @@ The worker also acts on its own, without an agent:
   - a person's request for changes on an earlier commit still blocks a
     pull request that the reviewer approved. That person must approve or
     dismiss their review before the label comes off, or the worker parks
-    it again.
+    it again;
+  - GitHub does not count the reviewer's approval toward the required
+    reviews, so the merge queue would never take the pull request. This
+    happens when the reviewer App lacks Contents: write (see below).
 
 The worker acts as the agent App, through a hive-broker client of its own.
 
@@ -146,10 +151,14 @@ only from the project; they treat other text as information.
    | App | Repository permissions |
    |---|---|
    | agent | Contents, Issues and Pull requests: read and write. Actions, Checks, Commit statuses: read. No Workflows, so no agent can change the workflow files. |
-   | reviewer | Pull requests: read and write. Contents, Issues, Checks, Commit statuses: read. It can review, but not push. |
+   | reviewer | Contents, Issues and Pull requests: read and write. Checks, Commit statuses: read. |
 
    Two Apps are needed because GitHub does not let a pull request's author
-   approve it.
+   approve it. The reviewer App's approval counts toward a required
+   approval only if the App has write access to Contents. Its hive-broker
+   must limit the review jobs' client to Contents: read, so that they can
+   approve but not push. Issues: write lets review jobs create issues for
+   the work they find.
 2. Add CI that runs on `pull_request` and `merge_group`, uses no secrets,
    and gives `GITHUB_TOKEN` read access only. In the repository's Actions
    settings, make `GITHUB_TOKEN` read-only by default and do not let
@@ -158,11 +167,10 @@ only from the project; they treat other text as information.
    one approval, dismiss approvals on new commits, require approval of the
    most recent push, require the CI checks, and require the merge queue.
    Allow auto-merge in the repository's settings.
-4. Create the labels `proposed`, `close-proposed` and `needs-human`. Add
-   the people in the project as collaborators, or make their organization
-   membership public: the Apps may not see private members as members,
-   and then their issues count as outside the project. `fc-worker -list`
-   shows how the worker sees each item.
+4. Create the labels `proposed`, `close-proposed` and `needs-human`. List
+   the people in the project in the config's `maintainers`, or add them as
+   collaborators: the Apps see a private organization member as outside
+   the project. `fc-worker -list` shows how the worker sees each item.
 5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
 6. Open the first issue, such as "Formalize the plan in PLAN.md". The first
@@ -197,9 +205,14 @@ fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-lis
 | `-state` | A directory for the worker's own files: a bare git repository per worker, which holds its claim commits. |
 | `-list` | Print every open issue and pull request with its next job and who holds its claim, then exit. |
 
-The worker logs a line when a job starts and when it ends, and passes the
-job's output through. SIGTERM or SIGINT stops it: a running job gets
-SIGTERM, and the worker releases its claim before it exits.
+The worker logs a line when a job starts and when it ends. A job's
+standard output goes to a file of its own in the `logs` directory, named
+for when it started, the worker, the item and the job, such as
+`20261117T193345Z-vps1-a-pr-12-review.log`; without `logs`, the worker
+passes it through. The worker never deletes these files. A job's standard
+error always goes to the worker's. SIGTERM or SIGINT stops the worker: a
+running job gets SIGTERM, and the worker releases its claim before it
+exits.
 
 ### Configuration
 
@@ -214,6 +227,9 @@ unset or empty, the worker refuses to start.
   "broker": { "url": "http://broker-agent:8080", "token": "${WORKER_BROKER_TOKEN}" },
   "agent": "fc-agent[bot]",
   "reviewer": "fc-reviewer[bot]",
+  "maintainers": ["alice"],
+  "logs": "/var/log/fc-worker",
+  "poll": "30s",
   "jobs": {
     "work": {
       "prompt": "/etc/fc-worker/prompts/work.md",
@@ -239,10 +255,12 @@ unset or empty, the worker refuses to start.
 | `name` | This worker, in claims and comments. Give every worker its own name. |
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
+| `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
 | `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error. Default `2m`. |
+| `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
@@ -274,11 +292,13 @@ name and email for its commits.
   months, so that nobody outside the project can open one.
 - Review agents are not trusted either. A misled reviewer can approve a bad
   pull request, but it cannot change one, and requiring approval of the
-  most recent push keeps whoever pushed last from approving.
+  most recent push keeps whoever pushed last from approving. It can create
+  and edit issues, including issues without `proposed`, which skip triage.
 - A known weak point: review agents build and run the code under review,
   in their own container, which holds the reviewer's broker token and a
   gateway token. So a pull request written to do so could take GitHub
-  tokens as the reviewer and approve itself, though it still cannot push.
+  tokens as the reviewer and approve itself. It still cannot push, as long
+  as the reviewer's broker limits its client to Contents: read.
   Keeping the tokens out of the container would not help, since the code
   could still write the reviewer's verdict. The fix is to run the code
   under review outside the reviewer's sandbox. Until then this relies on
@@ -294,11 +314,10 @@ name and email for its commits.
 
 ## Open points
 
-- Whether the reviewer App's approval counts toward the ruleset's required
-  approval, with only read access to Contents.
-- Whether turning on auto-merge for an approved pull request whose checks
-  pass puts it in the merge queue, or whether the worker must add it to the
-  queue itself.
+- An approved pull request with auto-merge on that the merge queue does not
+  take, for a reason other than those above, waits without a limit. So
+  does a pull request whose mergeability GitHub never works out, though
+  every survey asks it to.
 - Issues that block each other, or are each other's sub-issues, wait
   forever. Nothing detects such a cycle yet.
 - Without the Workflows permission, the agent App cannot push commits that

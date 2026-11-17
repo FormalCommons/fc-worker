@@ -27,6 +27,11 @@ type Config struct {
 	// "fc-agent[bot]".
 	Agent    string `json:"agent"`
 	Reviewer string `json:"reviewer"`
+	// Maintainers are the logins of people in the project, besides the
+	// repository's owner, organization members and collaborators. The Apps
+	// see a private organization member as outside the project, so list
+	// such members here.
+	Maintainers []string `json:"maintainers"`
 	// Jobs holds how to run each job: "work", "fix", "review" and "triage".
 	Jobs map[string]Job `json:"jobs"`
 	// IdleRounds is how many rounds in a row that change nothing an item
@@ -39,6 +44,10 @@ type Config struct {
 	// Poll is how long to wait when there is nothing to do, and after an
 	// error. Default 2m.
 	Poll duration `json:"poll"`
+	// Logs is a directory for the jobs' output: each job's standard output
+	// goes to a file of its own there, which the worker never deletes.
+	// Without it, jobs' output goes to the worker's own.
+	Logs string `json:"logs"`
 }
 
 // Broker is a hive-broker and a client token for it.
@@ -109,8 +118,11 @@ func (c *Config) expandEnv() error {
 			return v
 		})
 	}
-	for _, s := range []*string{&c.Repo, &c.Name, &c.Broker.URL, &c.Broker.Token, &c.Agent, &c.Reviewer} {
+	for _, s := range []*string{&c.Repo, &c.Name, &c.Broker.URL, &c.Broker.Token, &c.Agent, &c.Reviewer, &c.Logs} {
 		expand(s)
+	}
+	for i := range c.Maintainers {
+		expand(&c.Maintainers[i])
 	}
 	for name, j := range c.Jobs {
 		expand(&j.Prompt)
@@ -141,6 +153,11 @@ func (c *Config) validate() error {
 	}
 	if c.Agent == c.Reviewer {
 		return errors.New("agent and reviewer must be different Apps, since an author cannot approve its own pull request")
+	}
+	for _, m := range c.Maintainers {
+		if !login.MatchString(m) {
+			return fmt.Errorf("maintainers: %q is not a person's login", m)
+		}
 	}
 	for name, j := range c.Jobs {
 		if !slices.Contains(jobNames, name) {
@@ -176,4 +193,5 @@ func (c *Config) validate() error {
 var (
 	repoName   = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 	workerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	login      = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 )

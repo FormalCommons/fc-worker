@@ -22,18 +22,19 @@ type Item struct {
 	OpenPRs       int // open pull requests that will close this issue
 
 	// Pull requests only.
-	Draft      bool
-	Ours       bool      // opened by the agent App
-	Head       string    // the latest commit
-	Conflict   bool      // the branch conflicts with the base
-	Checks     string    // on the latest commit: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
-	Review     string    // the reviewer's latest review of the latest commit: APPROVED, CHANGES_REQUESTED or ""
-	ReviewedAt time.Time // when the reviewer gave Review
-	Requested  bool      // a person in the project requests changes to the latest commit
-	Blocked    bool      // a person's request for changes stands
-	AutoMerge  bool
-	Queued     bool
-	RemovedAt  time.Time // when it last left the merge queue without merging
+	Draft        bool
+	Ours         bool      // opened by the agent App
+	Head         string    // the latest commit
+	Conflict     bool      // the branch conflicts with the base
+	MergeUnknown bool      // GitHub has not yet worked out whether it conflicts
+	Checks       string    // on the latest commit: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
+	Review       string    // the reviewer's latest review of the latest commit: APPROVED, CHANGES_REQUESTED or ""
+	ReviewedAt   time.Time // when the reviewer gave Review
+	Requested    bool      // a person in the project requests changes to the latest commit
+	Decision     string    // GitHub's sum of the reviews that count: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" if none are required
+	AutoMerge    bool
+	Queued       bool
+	RemovedAt    time.Time // when it last left the merge queue without merging
 }
 
 // Next jobs that the worker does by itself, without an agent.
@@ -88,14 +89,26 @@ func next(it Item, c *Config) (job, why string) {
 		return "", fix + "; waiting for its author"
 	case fix != "":
 		return "fix", fix
+	case it.MergeUnknown:
+		// Right after a merge, GitHub works out again whether each pull
+		// request conflicts. Until it knows, a review or auto-merge may be
+		// wasted on one that needs a fix.
+		return "", "GitHub is still checking whether it conflicts with the base branch"
 	case it.Checks != "SUCCESS":
 		return "", "waiting for checks"
 	case it.Review == "":
 		return "review", "latest commit not reviewed"
 	case !it.Ours:
 		return "", "approved; its author decides when to merge"
-	case it.Blocked:
+	// The reviewer approved. Decision says whether that is enough for
+	// GitHub: CHANGES_REQUESTED while anyone's request for changes stands,
+	// and REVIEW_REQUIRED if the reviewer's approval does not count, as
+	// when its App lacks write access, or the ruleset requires more. Either
+	// way the merge queue would never take the pull request.
+	case it.Decision == "CHANGES_REQUESTED":
 		return park, "approved by the reviewer, but a person's request for changes stands"
+	case it.Decision == "REVIEW_REQUIRED":
+		return park, "approved by the reviewer, but GitHub still requires a review: the reviewer's approval does not count, or more are required"
 	case !it.AutoMerge && !it.Queued:
 		return autoMerge, "approved"
 	}
@@ -106,13 +119,16 @@ func next(it Item, c *Config) (job, why string) {
 var order = []string{park, autoMerge, "fix", "review", "triage", "work"}
 
 // outside reports whether an author is outside the project: neither of the
-// two Apps, nor the repository's owner, an organization member or a
-// collaborator. A deleted account is outside too.
+// two Apps, nor a maintainer in the config, nor the repository's owner, an
+// organization member or a collaborator. A deleted account is outside too.
 func outside(author *actor, association string, c *Config) bool {
 	if author == nil {
 		return true
 	}
 	if author.is(c.Agent) || author.is(c.Reviewer) {
+		return false
+	}
+	if author.Typename == "User" && slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, author.Login) }) {
 		return false
 	}
 	return association != "OWNER" && association != "MEMBER" && association != "COLLABORATOR"
@@ -288,7 +304,8 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 				PR: true, ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
 				Outside: outside(n.Author, n.AuthorAssociation, c),
 				Draft:   n.IsDraft, Head: n.HeadRefOid,
-				Conflict: n.Mergeable == "CONFLICTING", AutoMerge: n.AutoMergeRequest != nil, Queued: n.IsInMergeQueue,
+				Conflict: n.Mergeable == "CONFLICTING", MergeUnknown: n.Mergeable == "UNKNOWN",
+				Decision: n.ReviewDecision, AutoMerge: n.AutoMergeRequest != nil, Queued: n.IsInMergeQueue,
 			}
 			it.Ours = n.Author.is(c.Agent)
 			if c := n.Commits.Nodes; len(c) > 0 && c[0].Commit.StatusCheckRollup != nil {
@@ -305,9 +322,6 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 					it.Requested = true
 				}
 			}
-			// reviewDecision sums up every review that counts, so it says
-			// CHANGES_REQUESTED while anyone's request for changes stands.
-			it.Blocked = n.ReviewDecision == "CHANGES_REQUESTED" && it.Review == "APPROVED"
 			items = append(items, it)
 		}
 		p := r.Repository.PullRequests.PageInfo
