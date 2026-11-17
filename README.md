@@ -31,6 +31,7 @@ pull request from GitHub. The first row that matches decides:
 | Item | State | Next |
 |---|---|---|
 | Anything labelled `needs-human`, and draft pull requests | parked | nothing; a person decides |
+| Anything opened by someone outside the project | outside | nothing; a maintainer decides |
 | Issue labelled `proposed` or `close-proposed` | needs triage | a **triage** job |
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
 | Issue that an open pull request will close | in review | nothing; the pull request moves it |
@@ -43,14 +44,20 @@ pull request from GitHub. The first row that matches decides:
 Every state either has a job or waits for something that has one, so
 nothing is left behind. Limits send an item to `needs-human` rather than
 around the loop forever: `review_rounds` requests for changes on one pull
-request, `idle_rounds` rounds that change nothing, or `max_rounds` rounds
-of any kind on one item.
+request, `idle_rounds` rounds in a row that change nothing, or `max_rounds`
+rounds of any kind on one item.
+
+Outside the project means anyone but the two Apps and the repository's
+owners, organization members and collaborators. The repository is public,
+so anyone can open an issue, and agents must not take that as their task.
+To hand such an item to the agents, a maintainer opens an issue of their
+own.
 
 ## Jobs
 
 | Job | For | Runs as | The agent |
 |---|---|---|---|
-| work | a ready issue | the agent App | makes progress on the issue: opens a pull request that closes it, or adds issues for what it needs first (as sub-issues or blockers, labelled `proposed`), with a pull request for what it can do now that says "Part of #N" rather than closing the issue. If the issue needs no code, it labels it `close-proposed` and says why. |
+| work | a ready issue | the agent App | makes progress on the issue in one of three ways: opens a pull request that closes it; splits it into new issues, labelled `proposed`, as its sub-issues or blockers; or, if it needs no change, labels it `close-proposed` and says why. |
 | fix | a pull request that needs fixing | the agent App | pushes commits to the pull request's branch that address the reviews, failing checks or conflict. |
 | review | a pull request that needs review | the reviewer App | reviews the latest commit and approves or requests changes. |
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
@@ -58,7 +65,8 @@ of any kind on one item.
 Each job is one fresh agent in a fresh container, started with the job's
 prompt. The prompts are in [prompts/](prompts/); a repository can use its
 own. Fix only runs on pull requests that the agent App opened. Other pull
-requests get reviews, and their authors fix them.
+requests get reviews, and their authors fix them. Agents open pull requests
+ready for review, never as drafts.
 
 ## The worker
 
@@ -73,7 +81,8 @@ Each worker runs one job at a time:
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
    with the rendered prompt. It must finish within the job's timeout.
 5. **Check.** Read the item again, and comment on it: which job ran, and
-   whether it changed anything. These comments count the rounds.
+   whether it changed anything. These comments carry hidden markers, which
+   count the rounds.
 6. **Release** the claim.
 
 When there is nothing to do, it waits and surveys again.
@@ -84,8 +93,9 @@ The worker also acts on its own, without an agent:
 - It labels an item `needs-human` and says why, when
   - the reviewer has requested changes on a pull request `review_rounds`
     times;
-  - an item has had `idle_rounds` rounds that changed nothing, or
-    `max_rounds` rounds in all;
+  - an item has had `idle_rounds` rounds in a row that changed nothing, or
+    `max_rounds` rounds in all. Both count from when the item was last
+    parked, so removing `needs-human` gives it a fresh start;
   - a person's request for changes still blocks a pull request that the
     reviewer approved.
 
@@ -103,8 +113,12 @@ its claims when they expire. Nothing else depends on claims: they only
 keep two workers off one item.
 
 A worker reads the claims before the issues and pull requests, and
-releases a claim only after its job is done. So whatever a released claim's
-job did is already in the survey that follows.
+releases a claim only after its job is done. To release it, the worker
+replaces its lease with one that has already expired, rather than deleting
+the ref. So a claim never returns to a state that another worker saw
+before, and a worker can only take a claim if nobody has taken and
+released it since it looked. Whatever a released claim's job did is
+already in the survey that follows.
 
 ## Labels
 
@@ -168,9 +182,14 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
   GitHub tokens that last at most an hour and only have its job's
   permissions. A misled agent can do with them what its job could: for
   example, close issues, push to another agent's branch, or create issues
-  without `proposed`, which skips triage. It cannot merge without an
-  approval from the reviewer, or change the default branch except through
-  the merge queue.
+  without `proposed`, which skips triage. It cannot change the default
+  branch except through the merge queue, and it cannot approve its own
+  pull requests, since the agent App opened them.
+- The agent App can approve pull requests that it did not open. If an
+  App's approval counts toward the ruleset (see [Open points](#open-points)),
+  so does the agent App's, and a misled agent could approve and auto-merge
+  someone else's pull request. Until that is settled, keep pull requests
+  from outside the project to a minimum.
 - Review agents are not trusted either. A misled reviewer can approve a bad
   pull request, but it cannot change one, and requiring approval of the
   most recent push keeps whoever pushed last from approving.
@@ -191,3 +210,6 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
   queue itself.
 - Issues that block each other, or are each other's sub-issues, wait
   forever. Nothing detects such a cycle yet.
+- Without the Workflows permission, the agent App cannot push commits that
+  change workflow files. So a fix job cannot merge in a base branch whose
+  workflows changed since the pull request began.
