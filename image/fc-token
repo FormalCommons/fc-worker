@@ -1,0 +1,8 @@
+#!/bin/sh
+# Prints a GitHub token from hive-broker, for the client whose token is in
+# HIVE_BROKER_TOKEN. The broker reuses a token while it has more than ten
+# minutes left, so asking each time is cheap. The client token goes to curl
+# on stdin, not on its command line, where ps would show it.
+set -eu
+printf 'Authorization: Bearer %s\n' "$HIVE_BROKER_TOKEN" |
+	curl -fsS -X POST -H @- "$HIVE_BROKER_URL/github/token" | jq -er .token
