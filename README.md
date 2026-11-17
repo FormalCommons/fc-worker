@@ -94,8 +94,8 @@ The worker also acts on its own, without an agent:
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last
     parked, so removing `needs-human` gives it a fresh start;
-  - a person's request for changes still blocks a pull request that the
-    reviewer approved. That person must approve or dismiss their review
+  - a person's request for changes on an earlier commit still blocks a
+    pull request that the reviewer approved. That person must approve or dismiss their review
     before the label comes off, or the worker parks it again.
 
 The worker acts as the agent App, through a hive-broker client of its own.
@@ -153,9 +153,10 @@ only from the project; they treat other text as information.
    one approval, dismiss approvals on new commits, require approval of the
    most recent push, require the CI checks, and require the merge queue.
    Allow auto-merge in the repository's settings.
-4. Write `AGENTS.md`: what the project is, its conventions, and how to
+4. Create the labels `proposed`, `close-proposed` and `needs-human`.
+5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
-5. Open the first issue, such as "Formalize the plan in PLAN.md". The first
+6. Open the first issue, such as "Formalize the plan in PLAN.md". The first
    work job breaks it into issues.
 
 The merge queue needs a public repository owned by an organization, or a
@@ -174,6 +175,76 @@ On one machine, for example:
 The agent image adds to hive-agent `gh`, a git credential helper and a
 `gh` wrapper that fetch tokens from hive-broker when they are needed, and
 elan for Lean. Containers reach GitHub, the gateway and the broker.
+
+### Usage
+
+```
+fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-list]
+```
+
+| Flag | Meaning |
+|---|---|
+| `-config` | The config file. |
+| `-state` | A directory for the worker's own files: a bare git repository per worker, which holds its claim commits. |
+| `-list` | Print every open issue and pull request with its next job and who holds its claim, then exit. |
+
+The worker logs a line when a job starts and when it ends, and passes the
+job's output through. SIGTERM or SIGINT stops it: a running job gets
+SIGTERM, and the worker releases its claim before it exits.
+
+### Configuration
+
+The worker reads one JSON file. In any string value, `${NAME}` is replaced
+with the environment variable `NAME`; if that is unset or empty, the
+worker refuses to start.
+
+```json
+{
+  "repo": "FormalCommons/example",
+  "name": "vps1-a",
+  "broker": { "url": "http://broker-agent:8080", "token": "${WORKER_BROKER_TOKEN}" },
+  "agent": "fc-agent[bot]",
+  "reviewer": "fc-reviewer[bot]",
+  "jobs": {
+    "work": {
+      "prompt": "/etc/fc-worker/prompts/work.md",
+      "timeout": "90m",
+      "command": ["podman", "run", "--rm", "--network", "fc",
+                  "--userns", "keep-id:uid=1000,gid=1000",
+                  "--env-file", "/etc/fc-worker/agent.env",
+                  "-v", "{prompt}:/prompt.md:ro",
+                  "ghcr.io/formalcommons/fc-agent",
+                  "-cli", "claude", "-session", "fresh", "-once", "-timeout", "85m",
+                  "-prompt-file", "/prompt.md", "--", "--dangerously-skip-permissions"]
+    },
+    "fix": { "…": "the same, with prompts/fix.md" },
+    "review": { "…": "the same, with prompts/review.md and reviewer.env" },
+    "triage": { "…": "the same, with prompts/triage.md" }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `repo` | The repository, as `owner/name`. |
+| `name` | This worker, in claims and comments. Give every worker its own name. |
+| `broker` | A hive-broker for the agent App, and this worker's client token for it. |
+| `agent`, `reviewer` | The two Apps' logins. |
+| `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
+| `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
+| `max_rounds` | How many rounds of any kind park an item. Default 20. |
+| `poll` | How long to wait when there is nothing to do. Default `2m`. |
+
+A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
+use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
+(`issue` or `pull request`), `{{.Number}}`, `{{.Title}}` and `{{.Why}}`, why
+the item needs the job, such as "checks failed". The worker reads the
+prompt again for every job, so it can change while the worker runs.
+
+`agent.env` and `reviewer.env` give the job's container what it needs:
+`HIVE_BROKER_URL` and `HIVE_BROKER_TOKEN` for its broker client,
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` for hive-gateway, and the
+name and email for its commits.
 
 ## Security notes
 
