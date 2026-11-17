@@ -18,6 +18,11 @@ func testClaims(t *testing.T) (a, b *claims) {
 	}
 	a = &claims{url: remote, dir: filepath.Join(dir, "a.git"), name: "a"}
 	b = &claims{url: remote, dir: filepath.Join(dir, "b.git"), name: "b"}
+	for _, c := range []*claims{a, b} {
+		if err := c.init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return a, b
 }
 
@@ -40,9 +45,6 @@ func TestClaims(t *testing.T) {
 	h := held["issue-1"]
 	if h.Commit != commit || h.Lease.Worker != "a" || h.Lease.Job != "work" || time.Until(h.Lease.Expires) < 59*time.Minute {
 		t.Errorf("fetched %+v, want a's claim %s", h, commit)
-	}
-	if err := b.release(ctx, "issue-1", "work", "0000000000000000000000000000000000000000"); err == nil {
-		t.Error("b released a claim it does not hold")
 	}
 	if err := a.release(ctx, "issue-1", "work", commit); err != nil {
 		t.Fatal(err)

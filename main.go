@@ -33,6 +33,9 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if err := w.claims.init(ctx); err != nil {
+		log.Fatal(err)
+	}
 	if *list {
 		if err := w.list(ctx, os.Stdout); err != nil {
 			log.Fatal(err)

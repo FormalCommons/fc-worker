@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -62,12 +61,4 @@ func runJob(ctx context.Context, c *Config, job string, it Item, why string) err
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 30 * time.Second
 	return cmd.Run()
-}
-
-// progress sums up what a job can change about an item. A round whose item
-// has the same progress before and after made no progress. Comments do not
-// count, and neither do checks, which change by themselves.
-func progress(it Item) string {
-	labels := slices.Sorted(slices.Values(it.Labels))
-	return fmt.Sprint(labels, it.OpenBlockers, it.OpenSubIssues, it.OpenPRs, it.Draft, it.Head, it.Review, it.ReviewedAt)
 }

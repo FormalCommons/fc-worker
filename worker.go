@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"os/exec"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -67,10 +69,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 			}
 			old = h.Commit
 		}
-		ttl := 10 * time.Minute
-		if j, ok := w.c.Jobs[cand.job]; ok {
-			ttl += j.Timeout.Duration
-		}
+		ttl := w.c.Jobs[cand.job].Timeout.Duration + 10*time.Minute
 		commit, err := w.claims.take(ctx, key, cand.job, ttl, old)
 		if err != nil {
 			log.Printf("%s: not claimed: %v", key, err)
@@ -100,17 +99,19 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 		err = w.gh.graphql(ctx, `mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }`,
 			map[string]any{"id": cand.ID}, &struct{}{})
 		if err != nil {
-			// Otherwise the worker would try again at once, and forever.
+			// Auto-merge comes first in order, so a failure that lasts
+			// would hold up every other job.
 			err = w.park(ctx, cand.Item, "turning on auto-merge failed: "+err.Error())
 		}
 	default:
 		start := time.Now()
-		if err := runJob(ctx, w.c, cand.job, cand.Item, cand.why); err != nil {
-			log.Printf("%s: %s: %v", cand.key(), cand.job, err)
-		}
+		err = runJob(ctx, w.c, cand.job, cand.Item, cand.why)
 		log.Printf("%s: %s ended after %s", cand.key(), cand.job, time.Since(start).Round(time.Second))
-		if ctx.Err() == nil {
-			err = w.record(ctx, cand)
+		// A job whose command ran is a round, whether or not it
+		// succeeded. One that did not start is not.
+		var exit *exec.ExitError
+		if ctx.Err() == nil && (err == nil || errors.As(err, &exit)) {
+			err = errors.Join(err, w.record(ctx, cand))
 		}
 	}
 	if err != nil {
@@ -156,6 +157,14 @@ func (w *worker) record(ctx context.Context, cand candidate) error {
 	return nil
 }
 
+// progress sums up what a job can change about an item. A round whose item
+// has the same progress before and after changed nothing. Comments do not
+// count, and neither do checks and conflicts, which change by themselves.
+func progress(it Item) string {
+	labels := slices.Sorted(slices.Values(it.Labels))
+	return fmt.Sprint(labels, it.OpenBlockers, it.OpenSubIssues, it.OpenPRs, it.Draft, it.Head, it.Review, it.ReviewedAt)
+}
+
 // Markers that begin the worker's comments. Only a marker at the start
 // counts, so that a comment quoting one does not.
 const (
@@ -164,19 +173,20 @@ const (
 	parkMarker  = "<!-- fc-worker: parked -->"
 )
 
-// rounds counts, from an item's last 100 comments, the rounds it has had
-// since it was last parked, and how many of the latest of them in a row
-// changed nothing.
+// comment is a comment on an issue or pull request.
+type comment struct {
+	Body   string `json:"body"`
+	Author *actor `json:"author"`
+}
+
+// rounds reads an item's last 100 comments and counts its rounds.
 func (w *worker) rounds(ctx context.Context, number int) (rounds, idle int, err error) {
 	owner, name, _ := strings.Cut(w.c.Repo, "/")
 	var r struct {
 		Repository struct {
 			Item struct {
 				Comments struct {
-					Nodes []struct {
-						Body   string `json:"body"`
-						Author *actor `json:"author"`
-					} `json:"nodes"`
+					Nodes []comment `json:"nodes"`
 				} `json:"comments"`
 			} `json:"issueOrPullRequest"`
 		} `json:"repository"`
@@ -184,14 +194,22 @@ func (w *worker) rounds(ctx context.Context, number int) (rounds, idle int, err 
 	err = w.gh.graphql(ctx, `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
-      ... on Issue { comments(last: 100) { nodes { body author { login } } } }
-      ... on PullRequest { comments(last: 100) { nodes { body author { login } } } }
+      ... on Issue { comments(last: 100) { nodes { body author { __typename login } } } }
+      ... on PullRequest { comments(last: 100) { nodes { body author { __typename login } } } }
     }
   }
 }`, map[string]any{"owner": owner, "name": name, "number": number}, &r)
-	for _, c := range r.Repository.Item.Comments.Nodes {
-		// Anyone can write a marker into a comment; only the worker's count.
-		if c.Author == nil || !sameLogin(c.Author.Login, w.c.Agent) {
+	rounds, idle = countRounds(r.Repository.Item.Comments.Nodes, w.c.Agent)
+	return rounds, idle, err
+}
+
+// countRounds counts, from an item's comments, oldest first, the rounds it
+// has had since it was last parked, and how many of the latest of them in
+// a row changed nothing. Only the worker's comments count, since anyone can
+// write a marker into a comment; the worker comments as the agent App.
+func countRounds(comments []comment, agent string) (rounds, idle int) {
+	for _, c := range comments {
+		if !c.Author.is(agent) {
 			continue
 		}
 		switch {
@@ -203,7 +221,7 @@ func (w *worker) rounds(ctx context.Context, number int) (rounds, idle int, err 
 			rounds, idle = rounds+1, 0
 		}
 	}
-	return rounds, idle, err
+	return rounds, idle
 }
 
 // park labels an item needs-human and says why.

@@ -11,7 +11,7 @@ func TestNext(t *testing.T) {
 	// ours makes it a pull request that the agent App opened, with checks
 	// passing unless the case says otherwise.
 	ours := func(it Item) Item {
-		it.PR, it.Author = true, "fc-agent"
+		it.PR, it.Ours = true, true
 		if it.Checks == "" {
 			it.Checks = "SUCCESS"
 		}
@@ -30,9 +30,9 @@ func TestNext(t *testing.T) {
 		{"has sub-issues", Item{OpenSubIssues: 2}, ""},
 		{"in review", Item{OpenPRs: 1}, ""},
 		{"outside issue", Item{Outside: true}, ""},
-		{"outside PR", Item{PR: true, Outside: true, Author: "mallory", Checks: "SUCCESS"}, ""},
+		{"outside PR", Item{PR: true, Outside: true, Checks: "SUCCESS"}, ""},
 
-		{"draft", Item{PR: true, Draft: true, Author: "fc-agent", Conflict: true}, ""},
+		{"draft", Item{PR: true, Draft: true, Ours: true, Conflict: true}, ""},
 		{"parked PR", ours(Item{Labels: []string{"needs-human"}, Conflict: true}), ""},
 		{"conflict", ours(Item{Conflict: true}), "fix"},
 		{"checks failed", ours(Item{Checks: "FAILURE"}), "fix"},
@@ -40,22 +40,22 @@ func TestNext(t *testing.T) {
 		{"changes requested", ours(Item{Review: "CHANGES_REQUESTED"}), "fix"},
 		{"changes requested, checks running", ours(Item{Review: "CHANGES_REQUESTED", Checks: "PENDING"}), "fix"},
 		{"a person requested changes", ours(Item{Requested: true, Review: "APPROVED"}), "fix"},
-		{"person's PR, a person requested changes", Item{PR: true, Author: "alice", Checks: "SUCCESS", Requested: true}, ""},
+		{"person's PR, a person requested changes", Item{PR: true, Checks: "SUCCESS", Requested: true}, ""},
 		{"conflict after approval", ours(Item{Conflict: true, Review: "APPROVED"}), "fix"},
 		{"removed from queue", ours(Item{Review: "APPROVED", ReviewedAt: t0, RemovedAt: t0.Add(time.Hour)}), "fix"},
 		{"removed before approval", ours(Item{Review: "APPROVED", ReviewedAt: t0, RemovedAt: t0.Add(-time.Hour)}), autoMerge},
 		{"checks running", ours(Item{Checks: "PENDING"}), ""},
-		{"no checks yet", Item{PR: true, Author: "fc-agent"}, ""},
+		{"no checks yet", Item{PR: true, Ours: true}, ""},
 		{"not reviewed", ours(Item{}), "review"},
 		{"approved", ours(Item{Review: "APPROVED"}), autoMerge},
 		{"approved, auto-merge on", ours(Item{Review: "APPROVED", AutoMerge: true}), ""},
 		{"approved, queued", ours(Item{Review: "APPROVED", Queued: true}), ""},
 		{"approved, blocked by a person", ours(Item{Review: "APPROVED", Blocked: true}), park},
 
-		{"person's PR, not reviewed", Item{PR: true, Author: "alice", Checks: "SUCCESS"}, "review"},
-		{"person's PR, conflict", Item{PR: true, Author: "alice", Conflict: true}, ""},
-		{"person's PR, changes requested", Item{PR: true, Author: "alice", Checks: "SUCCESS", Review: "CHANGES_REQUESTED"}, ""},
-		{"person's PR, approved", Item{PR: true, Author: "alice", Checks: "SUCCESS", Review: "APPROVED"}, ""},
+		{"person's PR, not reviewed", Item{PR: true, Checks: "SUCCESS"}, "review"},
+		{"person's PR, conflict", Item{PR: true, Conflict: true}, ""},
+		{"person's PR, changes requested", Item{PR: true, Checks: "SUCCESS", Review: "CHANGES_REQUESTED"}, ""},
+		{"person's PR, approved", Item{PR: true, Checks: "SUCCESS", Review: "APPROVED"}, ""},
 	} {
 		if got, why := next(tc.it, c); got != tc.want {
 			t.Errorf("%s: got %q (%s), want %q", tc.name, got, why, tc.want)
@@ -93,13 +93,14 @@ func TestOutside(t *testing.T) {
 		association string
 		want        bool
 	}{
-		{&actor{"fc-agent"}, "NONE", false},
-		{&actor{"fc-reviewer[bot]"}, "NONE", false},
-		{&actor{"alice"}, "OWNER", false},
-		{&actor{"alice"}, "MEMBER", false},
-		{&actor{"alice"}, "COLLABORATOR", false},
-		{&actor{"mallory"}, "CONTRIBUTOR", true},
-		{&actor{"mallory"}, "NONE", true},
+		{&actor{"Bot", "fc-agent"}, "NONE", false},
+		{&actor{"Bot", "fc-reviewer[bot]"}, "NONE", false},
+		{&actor{"User", "fc-agent"}, "NONE", true}, // a person with the App's name
+		{&actor{"User", "alice"}, "OWNER", false},
+		{&actor{"User", "alice"}, "MEMBER", false},
+		{&actor{"User", "alice"}, "COLLABORATOR", false},
+		{&actor{"User", "mallory"}, "CONTRIBUTOR", true},
+		{&actor{"Bot", "other-app"}, "NONE", true},
 		{nil, "NONE", true},
 	} {
 		if got := outside(tc.author, tc.association, c); got != tc.want {

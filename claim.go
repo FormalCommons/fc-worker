@@ -91,15 +91,18 @@ func (c *claims) release(ctx context.Context, key, job, commit string) error {
 	return err
 }
 
-// git runs git in the local bare repository, creating it first if needed.
-// Fetches and pushes authenticate with a header, which keeps the token out
-// of the command line.
-func (c *claims) git(ctx context.Context, args ...string) (string, error) {
-	if _, err := os.Stat(c.dir); os.IsNotExist(err) {
-		if out, err := exec.CommandContext(ctx, "git", "init", "--quiet", "--bare", c.dir).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("git init: %v: %s", err, out)
-		}
+// init creates the local bare repository, if it does not exist yet.
+func (c *claims) init(ctx context.Context) error {
+	if out, err := exec.CommandContext(ctx, "git", "init", "--quiet", "--bare", c.dir).CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %v: %s", err, out)
 	}
+	return nil
+}
+
+// git runs git in the local bare repository. Fetches and pushes
+// authenticate with a header, which keeps the token out of the command
+// line.
+func (c *claims) git(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = c.dir
 	cmd.Env = append(os.Environ(),

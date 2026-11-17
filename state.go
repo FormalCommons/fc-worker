@@ -23,7 +23,7 @@ type Item struct {
 
 	// Pull requests only.
 	Draft      bool
-	Author     string
+	Ours       bool      // opened by the agent App
 	Head       string    // the latest commit
 	Conflict   bool      // the branch conflicts with the base
 	Checks     string    // on the latest commit: SUCCESS, FAILURE, ERROR, PENDING, EXPECTED or ""
@@ -70,7 +70,6 @@ func next(it Item, c *Config) (job, why string) {
 		return "work", "ready"
 	}
 
-	ours := sameLogin(it.Author, c.Agent)
 	fix := ""
 	switch {
 	case it.Conflict:
@@ -85,7 +84,7 @@ func next(it Item, c *Config) (job, why string) {
 		fix = "removed from the merge queue"
 	}
 	switch {
-	case fix != "" && !ours:
+	case fix != "" && !it.Ours:
 		return "", fix + "; waiting for its author"
 	case fix != "":
 		return "fix", fix
@@ -93,7 +92,7 @@ func next(it Item, c *Config) (job, why string) {
 		return "", "waiting for checks"
 	case it.Review == "":
 		return "review", "latest commit not reviewed"
-	case !ours:
+	case !it.Ours:
 		return "", "approved; its author decides when to merge"
 	case it.Blocked:
 		return park, "approved by the reviewer, but a person's request for changes stands"
@@ -113,14 +112,10 @@ func outside(author *actor, association string, c *Config) bool {
 	if author == nil {
 		return true
 	}
-	if sameLogin(author.Login, c.Agent) || sameLogin(author.Login, c.Reviewer) {
+	if author.is(c.Agent) || author.is(c.Reviewer) {
 		return false
 	}
 	return association != "OWNER" && association != "MEMBER" && association != "COLLABORATOR"
-}
-
-func sameLogin(a, b string) bool {
-	return strings.EqualFold(strings.TrimSuffix(a, "[bot]"), strings.TrimSuffix(b, "[bot]"))
 }
 
 const issuesQuery = `query($owner: String!, $name: String!, $after: String) {
@@ -129,11 +124,11 @@ const issuesQuery = `query($owner: String!, $name: String!, $after: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         id number title authorAssociation
-        author { login }
+        author { __typename login }
         labels(first: 30) { nodes { name } }
         blockedBy(first: 50) { nodes { state } }
         subIssues(first: 100) { nodes { state } }
-        closedByPullRequestsReferences(first: 20) { nodes { state authorAssociation author { login } } }
+        closedByPullRequestsReferences(first: 20) { nodes { state authorAssociation author { __typename login } } }
       }
     }
   }
@@ -145,11 +140,11 @@ const pullsQuery = `query($owner: String!, $name: String!, $after: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         id number title isDraft headRefOid mergeable reviewDecision isInMergeQueue authorAssociation
-        author { login }
+        author { __typename login }
         labels(first: 30) { nodes { name } }
         autoMergeRequest { enabledAt }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-        reviews(last: 100) { nodes { author { login } authorAssociation state submittedAt commit { oid } } }
+        reviews(last: 100) { nodes { author { __typename login } authorAssociation state submittedAt commit { oid } } }
         timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
           nodes { ... on RemovedFromMergeQueueEvent { createdAt } }
         }
@@ -295,18 +290,16 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 				Draft:   n.IsDraft, Head: n.HeadRefOid,
 				Conflict: n.Mergeable == "CONFLICTING", AutoMerge: n.AutoMergeRequest != nil, Queued: n.IsInMergeQueue,
 			}
-			if n.Author != nil {
-				it.Author = n.Author.Login
-			}
+			it.Ours = n.Author.is(c.Agent)
 			if c := n.Commits.Nodes; len(c) > 0 && c[0].Commit.StatusCheckRollup != nil {
 				it.Checks = c[0].Commit.StatusCheckRollup.State
 			}
 			if t := n.TimelineItems.Nodes; len(t) > 0 {
 				it.RemovedAt = t[0].CreatedAt
 			}
-			for login, r := range verdicts(n.Reviews.Nodes, it.Head) {
+			for _, r := range verdicts(n.Reviews.Nodes, it.Head) {
 				switch {
-				case sameLogin(login, c.Reviewer):
+				case r.Author.is(c.Reviewer):
 					it.Review, it.ReviewedAt = r.State, r.SubmittedAt
 				case r.State == "CHANGES_REQUESTED" && !outside(&r.Author, r.AuthorAssociation, c):
 					it.Requested = true
@@ -327,9 +320,18 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 	return items, nil
 }
 
-// actor is the author of an issue, pull request or review.
+// actor is the author of an issue, pull request, review or comment.
 type actor struct {
-	Login string `json:"login"`
+	Typename string `json:"__typename"`
+	Login    string `json:"login"`
+}
+
+// is reports whether a is the GitHub App whose login is app, such as
+// "fc-agent[bot]". GitHub gives an App's login with or without "[bot]",
+// and a person may have the same login without it, so only a Bot counts.
+func (a *actor) is(app string) bool {
+	return a != nil && a.Typename == "Bot" &&
+		strings.EqualFold(strings.TrimSuffix(a.Login, "[bot]"), strings.TrimSuffix(app, "[bot]"))
 }
 
 type review struct {

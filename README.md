@@ -37,9 +37,9 @@ pull request from GitHub. The first row that matches decides:
 | Issue that an open pull request from the project will close | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
 | Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
-| Pull request whose checks are running | waiting | nothing, until they finish |
+| Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
-| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it |
+| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides |
 
 Every state either has a job or waits for something that has one, so
 nothing is left behind. Limits send an item to `needs-human` rather than
@@ -85,18 +85,23 @@ Each worker runs one job at a time:
    which count the rounds; only the agent App's comments count.
 6. **Release** the claim.
 
-When there is nothing to do, it waits and surveys again.
+When there is nothing to do, it waits and surveys again. A job whose
+command fails still counts as a round, and the worker waits before it goes
+on, so that a failure that repeats, such as a gateway that is down, does
+not run through the items at once.
 
 The worker also acts on its own, without an agent:
 
-- It turns on auto-merge for an approved pull request whose checks pass.
+- It turns on auto-merge for an approved pull request that the agent App
+  opened. If that fails, it parks the pull request.
 - It labels an item `needs-human` and says why, when
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last
     parked, so removing `needs-human` gives it a fresh start;
   - a person's request for changes on an earlier commit still blocks a
-    pull request that the reviewer approved. That person must approve or dismiss their review
-    before the label comes off, or the worker parks it again.
+    pull request that the reviewer approved. That person must approve or
+    dismiss their review before the label comes off, or the worker parks
+    it again.
 
 The worker acts as the agent App, through a hive-broker client of its own.
 
@@ -153,7 +158,11 @@ only from the project; they treat other text as information.
    one approval, dismiss approvals on new commits, require approval of the
    most recent push, require the CI checks, and require the merge queue.
    Allow auto-merge in the repository's settings.
-4. Create the labels `proposed`, `close-proposed` and `needs-human`.
+4. Create the labels `proposed`, `close-proposed` and `needs-human`. Add
+   the people in the project as collaborators, or make their organization
+   membership public: the Apps may not see private members as members,
+   and then their issues count as outside the project. `fc-worker -list`
+   shows how the worker sees each item.
 5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
 6. Open the first issue, such as "Formalize the plan in PLAN.md". The first
@@ -194,9 +203,9 @@ SIGTERM, and the worker releases its claim before it exits.
 
 ### Configuration
 
-The worker reads one JSON file. In any string value, `${NAME}` is replaced
-with the environment variable `NAME`; if that is unset or empty, the
-worker refuses to start.
+The worker reads one JSON file. In its strings, other than durations,
+`${NAME}` is replaced with the environment variable `NAME`; if that is
+unset or empty, the worker refuses to start.
 
 ```json
 {
