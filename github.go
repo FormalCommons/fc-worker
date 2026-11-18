@@ -144,6 +144,11 @@ func (g *github) rateLimits(ctx context.Context) (graphql, rest rateLimit, err e
 	if err := g.rest(ctx, http.MethodGet, "/rate_limit", nil, &r); err != nil {
 		return graphql, rest, err
 	}
+	for _, name := range []string{"graphql", "core"} {
+		if _, ok := r.Resources[name]; !ok {
+			return graphql, rest, fmt.Errorf("rate_limit: no %s limit in GitHub's answer", name)
+		}
+	}
 	get := func(name string) rateLimit {
 		l := r.Resources[name]
 		return rateLimit{l.Remaining, time.Unix(l.Reset, 0)}

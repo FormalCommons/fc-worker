@@ -96,8 +96,9 @@ pull requests. Review jobs use the reviewer App's limits, which the worker
 does not watch. `-list` shows what is left.
 
 A job whose command fails still counts as a round, but not toward
-`idle_rounds`, and the worker waits before it goes on. So a failure that repeats, such as a
-gateway that is down, does not run through the items at once.
+`idle_rounds`, and the worker waits before it goes on. So a failure that
+repeats, such as a gateway that is down, does not run through the items at
+once.
 
 The worker also acts on its own, without an agent:
 

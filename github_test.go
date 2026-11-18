@@ -25,10 +25,10 @@ func TestRateLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (rateLimit{4000, reset.Add(time.Minute)}); graphql != want {
-		t.Errorf("GraphQL %+v, want %+v", graphql, want)
+	if graphql.Remaining != 4000 || !graphql.Reset.Equal(reset.Add(time.Minute)) {
+		t.Errorf("GraphQL %+v, want 4000 left until %v", graphql, reset.Add(time.Minute))
 	}
-	if want := (rateLimit{500, reset}); rest != want {
-		t.Errorf("REST %+v, want %+v", rest, want)
+	if rest.Remaining != 500 || !rest.Reset.Equal(reset) {
+		t.Errorf("REST %+v, want 500 left until %v", rest, reset)
 	}
 }
