@@ -44,6 +44,10 @@ type Config struct {
 	// Poll is how long to wait when there is nothing to do, and after an
 	// error. Default 2m.
 	Poll duration `json:"poll"`
+	// RateReserve is how much of GitHub's GraphQL and REST rate limits to
+	// leave for the jobs that are running: the worker waits while fewer
+	// points or requests remain. Default 1000; 1 turns the check off.
+	RateReserve int `json:"rate_reserve"`
 	// Logs is a directory for the jobs' output: each job's standard output
 	// goes to a file of its own there, which the worker never deletes.
 	// Without it, jobs' output goes to the worker's own.
@@ -184,8 +188,11 @@ func (c *Config) validate() error {
 	if c.Poll.Duration == 0 {
 		c.Poll.Duration = 2 * time.Minute
 	}
-	if c.IdleRounds < 0 || c.MaxRounds < 0 || c.Poll.Duration < 0 {
-		return errors.New("idle_rounds, max_rounds and poll must not be negative")
+	if c.RateReserve == 0 {
+		c.RateReserve = 1000
+	}
+	if c.IdleRounds < 0 || c.MaxRounds < 0 || c.Poll.Duration < 0 || c.RateReserve < 0 {
+		return errors.New("idle_rounds, max_rounds, poll and rate_reserve must not be negative")
 	}
 	return nil
 }

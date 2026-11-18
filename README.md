@@ -86,10 +86,19 @@ Each worker runs one job at a time:
    which count the rounds; only the agent App's comments count.
 6. **Release** the claim.
 
-When there is nothing to do, it waits and surveys again. A job whose
-command fails still counts as a round, but not toward `idle_rounds`, and
-the worker waits before it goes on. So a failure that repeats, such as a
-gateway that is down, does not run through the items at once.
+When there is nothing to do, it waits and surveys again. It also does
+nothing but wait while fewer than `rate_reserve` points or requests are
+left in the agent App's GraphQL or REST rate limit, which it asks GitHub
+for before each survey. The workers and agent jobs of an installation
+share these limits, 5,000 an hour each unless GitHub grants more, and a
+survey costs about 3 GraphQL points for every 50 open issues and 25 open
+pull requests. Review jobs use the reviewer App's limits, which the worker
+does not watch. `-list` shows what is left.
+
+A job whose command fails still counts as a round, but not toward
+`idle_rounds`, and the worker waits before it goes on. So a failure that
+repeats, such as a gateway that is down, does not run through the items at
+once.
 
 The worker also acts on its own, without an agent:
 
@@ -203,7 +212,7 @@ fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-lis
 |---|---|
 | `-config` | The config file. |
 | `-state` | A directory for the worker's own files: a bare git repository per worker, which holds its claim commits. |
-| `-list` | Print every open issue and pull request with its next job and who holds its claim, then exit. |
+| `-list` | Print every open issue and pull request with its next job and who holds its claim, and GitHub's rate limits, then exit. |
 
 The worker logs a line when a job starts and when it ends. A job's
 standard output goes to a file of its own in the `logs` directory, named
@@ -260,6 +269,7 @@ unset or empty, the worker refuses to start.
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error. Default `2m`. |
+| `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
