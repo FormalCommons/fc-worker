@@ -110,13 +110,7 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 	case park:
 		err = w.park(ctx, cand.Item, cand.why)
 	case autoMerge:
-		err = w.gh.graphql(ctx, `mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }`,
-			map[string]any{"id": cand.ID}, &struct{}{})
-		if err != nil {
-			// Auto-merge comes first in order, so a failure that lasts
-			// would hold up every other job.
-			err = w.park(ctx, cand.Item, "turning on auto-merge failed: "+err.Error())
-		}
+		err = w.autoMerge(ctx, cand.Item)
 	default:
 		start := time.Now()
 		var started bool
@@ -183,7 +177,52 @@ func (w *worker) record(ctx context.Context, cand candidate, jobErr error) error
 // count, and neither do checks and conflicts, which change by themselves.
 func progress(it Item) string {
 	labels := slices.Sorted(slices.Values(it.Labels))
-	return fmt.Sprint(labels, it.OpenBlockers, it.OpenSubIssues, it.OpenPRs, it.Draft, it.Head, it.Review, it.ReviewedAt)
+	return fmt.Sprint(labels, it.OpenBlockers, it.OpenSubIssues, it.ClosingPRs, it.Draft, it.Head, it.Review, it.ReviewedAt)
+}
+
+// settle is how long the worker gives GitHub to show a merge everywhere.
+var settle = 10 * time.Second
+
+// autoMerge turns on auto-merge for a pull request, and parks it if that
+// fails. Auto-merge comes first in order, so a failure that lasts would hold
+// up every other job.
+func (w *worker) autoMerge(ctx context.Context, it Item) error {
+	err := w.gh.graphql(ctx, `mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }`,
+		map[string]any{"id": it.ID}, &struct{}{})
+	if err == nil {
+		return nil
+	}
+	// For a few seconds after it leaves the merge queue as merged, a pull
+	// request still looks open and not queued, and turning on auto-merge
+	// fails. So look at it again once GitHub has settled, and park it only
+	// if it still needs auto-merge.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(settle):
+	}
+	owner, name, _ := strings.Cut(w.c.Repo, "/")
+	var r struct {
+		Repository struct {
+			PullRequest struct {
+				State            string    `json:"state"`
+				IsInMergeQueue   bool      `json:"isInMergeQueue"`
+				AutoMergeRequest *struct{} `json:"autoMergeRequest"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if w.gh.graphql(ctx, `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { state isInMergeQueue autoMergeRequest { enabledAt } }
+  }
+}`, map[string]any{"owner": owner, "name": name, "number": it.Number}, &r) == nil {
+		pr := r.Repository.PullRequest
+		if pr.State != "OPEN" || pr.IsInMergeQueue || pr.AutoMergeRequest != nil {
+			log.Printf("pr-%d: turning on auto-merge failed, but it no longer needs it: %v", it.Number, err)
+			return nil
+		}
+	}
+	return w.park(ctx, it, "turning on auto-merge failed: "+err.Error())
 }
 
 // Markers that begin the worker's comments. Only a marker at the start

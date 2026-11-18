@@ -28,7 +28,7 @@ func TestNext(t *testing.T) {
 		{"close-proposed", Item{Labels: []string{"close-proposed"}}, "triage"},
 		{"blocked", Item{OpenBlockers: 1}, ""},
 		{"has sub-issues", Item{OpenSubIssues: 2}, ""},
-		{"in review", Item{OpenPRs: 1}, ""},
+		{"in review", Item{ClosingPRs: 1}, ""},
 		{"outside issue", Item{Outside: true}, ""},
 		{"outside PR", Item{PR: true, Outside: true, Checks: "SUCCESS"}, ""},
 
@@ -90,6 +90,37 @@ func TestVerdicts(t *testing.T) {
 	}
 	if got[actor{"User", "fc-reviewer"}].State != "CHANGES_REQUESTED" || got[actor{"User", "bob"}].State != "APPROVED" || len(got) != 3 {
 		t.Errorf("verdicts %+v", got)
+	}
+}
+
+func TestClosing(t *testing.T) {
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]"}
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	pr := func(state string, merged time.Duration, a *actor, association string) closingPR {
+		p := closingPR{State: state, Author: a, AuthorAssociation: association}
+		if state == "MERGED" {
+			p.MergedAt = now.Add(-merged)
+		}
+		return p
+	}
+	agent, mallory := &actor{"Bot", "fc-agent"}, &actor{"User", "mallory"}
+	for _, tc := range []struct {
+		name string
+		prs  []closingPR
+		want int
+	}{
+		{"none", nil, 0},
+		{"open", []closingPR{pr("OPEN", 0, agent, "NONE")}, 1},
+		{"open, from outside", []closingPR{pr("OPEN", 0, mallory, "CONTRIBUTOR")}, 0},
+		{"just merged", []closingPR{pr("MERGED", 4*time.Second, agent, "NONE")}, 1},
+		{"just merged, from outside", []closingPR{pr("MERGED", 4*time.Second, mallory, "CONTRIBUTOR")}, 1},
+		{"merged long ago", []closingPR{pr("MERGED", time.Hour, agent, "NONE")}, 0},
+		{"closed", []closingPR{pr("CLOSED", 0, agent, "NONE")}, 0},
+		{"several", []closingPR{pr("CLOSED", 0, agent, "NONE"), pr("OPEN", 0, agent, "NONE"), pr("MERGED", time.Second, agent, "NONE")}, 2},
+	} {
+		if got := closing(tc.prs, c, now); got != tc.want {
+			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 
