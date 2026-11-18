@@ -34,7 +34,7 @@ pull request from GitHub. The first row that matches decides:
 | Anything opened by someone outside the project | outside | nothing; a maintainer decides |
 | Issue labelled `proposed` or `close-proposed` | needs triage | a **triage** job |
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
-| Issue that an open pull request from the project will close, or that a pull request merged less than five minutes ago will close | in review | nothing; the pull request moves it. GitHub closes the issue seconds after the merge, so the worker does not take it for ready in the meantime |
+| Issue that an open pull request from the project will close, or that a pull request merged less than five minutes ago will close (GitHub closes it seconds after the merge) | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
 | Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
@@ -105,9 +105,10 @@ The worker also acts on its own, without an agent:
 - It turns on auto-merge for an approved pull request that the agent App
   opened, which puts it in the merge queue as soon as the ruleset allows.
   If that fails, it looks at the pull request again ten seconds later,
-  and parks it unless it has merged, closed or joined the merge queue
-  meanwhile: a pull request still looks open for a few seconds after it
-  merges.
+  since a pull request still looks open for a few seconds after it
+  merges. It parks the pull request unless it has merged, closed, joined
+  the merge queue or had auto-merge turned on meanwhile; it parks it too
+  if it cannot read it again.
 - It labels an item `needs-human` and says why, when
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last

@@ -211,16 +211,18 @@ func (w *worker) autoMerge(ctx context.Context, it Item) error {
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if w.gh.graphql(ctx, `query($owner: String!, $name: String!, $number: Int!) {
+	rerr := w.gh.graphql(ctx, `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) { state isInMergeQueue autoMergeRequest { enabledAt } }
   }
-}`, map[string]any{"owner": owner, "name": name, "number": it.Number}, &r) == nil {
-		pr := r.Repository.PullRequest
-		if pr.State != "OPEN" || pr.IsInMergeQueue || pr.AutoMergeRequest != nil {
-			log.Printf("pr-%d: turning on auto-merge failed, but it no longer needs it: %v", it.Number, err)
-			return nil
-		}
+}`, map[string]any{"owner": owner, "name": name, "number": it.Number}, &r)
+	pr := r.Repository.PullRequest
+	switch {
+	case rerr != nil:
+		log.Printf("pr-%d: reading it again: %v", it.Number, rerr)
+	case pr.State == "MERGED" || pr.State == "CLOSED" || pr.IsInMergeQueue || pr.AutoMergeRequest != nil:
+		log.Printf("pr-%d: turning on auto-merge failed, but it no longer needs it: %v", it.Number, err)
+		return nil
 	}
 	return w.park(ctx, it, "turning on auto-merge failed: "+err.Error())
 }
