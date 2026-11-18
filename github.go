@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
+	"strconv"
 	"time"
 )
 
@@ -21,6 +24,26 @@ type github struct {
 
 	token   string
 	expires time.Time
+
+	// limits are GitHub's rate limits, by resource, such as "graphql" and
+	// "core", as of the last answer from each. The worker shares them with
+	// the other workers and the agent jobs of its App's installation.
+	limits map[string]rateLimit
+}
+
+type rateLimit struct {
+	Remaining int
+	Reset     time.Time
+}
+
+// low returns the first rate limit with fewer than reserve left, if any.
+func (g *github) low(reserve int) (resource string, l rateLimit, ok bool) {
+	for _, r := range slices.Sorted(maps.Keys(g.limits)) {
+		if l := g.limits[r]; l.Remaining < reserve && time.Now().Before(l.Reset) {
+			return r, l, true
+		}
+	}
+	return "", rateLimit{}, false
 }
 
 func newGitHub(c *Config) *github {
@@ -106,6 +129,7 @@ func (g *github) send(req *http.Request, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
+	g.noteLimit(resp.Header)
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return err
@@ -122,4 +146,18 @@ func (g *github) send(req *http.Request, out any) error {
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+// noteLimit records the rate limit that an answer's headers report.
+func (g *github) noteLimit(h http.Header) {
+	resource := h.Get("X-RateLimit-Resource")
+	remaining, err1 := strconv.Atoi(h.Get("X-RateLimit-Remaining"))
+	reset, err2 := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64)
+	if resource == "" || err1 != nil || err2 != nil {
+		return
+	}
+	if g.limits == nil {
+		g.limits = map[string]rateLimit{}
+	}
+	g.limits[resource] = rateLimit{remaining, time.Unix(reset, 0)}
 }

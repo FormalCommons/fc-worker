@@ -43,8 +43,8 @@ func TestLoadConfig(t *testing.T) {
 	if c.Jobs["review"].Timeout.Duration != 30*time.Minute {
 		t.Errorf("review timeout %v", c.Jobs["review"].Timeout)
 	}
-	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" {
-		t.Errorf("defaults %d %d %v %q", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs)
+	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" || c.RateReserve != 1000 {
+		t.Errorf("defaults %d %d %v %q %d", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs, c.RateReserve)
 	}
 
 	t.Setenv("TEST_MAINTAINER", "bob")

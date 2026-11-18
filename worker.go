@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -59,6 +60,11 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	items, err := survey(ctx, w.gh, w.c)
 	if err != nil {
 		return false, err
+	}
+	if r, l, ok := w.gh.low(w.c.RateReserve); ok {
+		log.Printf("GitHub's %s rate limit has %d left until %s, less than rate_reserve; starting no job",
+			r, l.Remaining, l.Reset.UTC().Format(time.TimeOnly))
+		return false, nil
 	}
 	for _, cand := range candidates(items, w.c) {
 		key, old := cand.key(), ""
@@ -270,5 +276,12 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", cand.key(), cand.job, cand.why, claimed, it.Title)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	for _, r := range slices.Sorted(maps.Keys(w.gh.limits)) {
+		l := w.gh.limits[r]
+		fmt.Fprintf(out, "GitHub's %s rate limit: %d left until %s\n", r, l.Remaining, l.Reset.UTC().Format(time.TimeOnly))
+	}
+	return nil
 }
