@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
-	"slices"
-	"strconv"
 	"time"
 )
 
@@ -19,35 +16,16 @@ const api = "https://api.github.com"
 
 // github calls GitHub's REST and GraphQL APIs with tokens from hive-broker.
 type github struct {
+	api    string
 	broker Broker
 	client *http.Client
 
 	token   string
 	expires time.Time
-
-	// limits are GitHub's rate limits, by resource, such as "graphql" and
-	// "core", as of the last answer from each. The worker shares them with
-	// the other workers and the agent jobs of its App's installation.
-	limits map[string]rateLimit
-}
-
-type rateLimit struct {
-	Remaining int
-	Reset     time.Time
-}
-
-// low returns the first rate limit with fewer than reserve left, if any.
-func (g *github) low(reserve int) (resource string, l rateLimit, ok bool) {
-	for _, r := range slices.Sorted(maps.Keys(g.limits)) {
-		if l := g.limits[r]; l.Remaining < reserve && time.Now().Before(l.Reset) {
-			return r, l, true
-		}
-	}
-	return "", rateLimit{}, false
 }
 
 func newGitHub(c *Config) *github {
-	return &github{broker: c.Broker, client: &http.Client{Timeout: time.Minute}}
+	return &github{api: api, broker: c.Broker, client: &http.Client{Timeout: time.Minute}}
 }
 
 // getToken returns a GitHub token, asking the broker for a new one when the
@@ -74,7 +52,7 @@ func (g *github) getToken(ctx context.Context) (string, error) {
 
 // rest calls the REST API, such as rest(ctx, "POST", "/repos/o/r/issues/1/labels", body, nil).
 func (g *github) rest(ctx context.Context, method, path string, body, out any) error {
-	return g.call(ctx, method, api+path, body, out)
+	return g.call(ctx, method, g.api+path, body, out)
 }
 
 // graphql runs a GraphQL query and decodes its data into out.
@@ -85,7 +63,7 @@ func (g *github) graphql(ctx context.Context, query string, vars map[string]any,
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
-	if err := g.call(ctx, http.MethodPost, api+"/graphql", map[string]any{"query": query, "variables": vars}, &r); err != nil {
+	if err := g.call(ctx, http.MethodPost, g.api+"/graphql", map[string]any{"query": query, "variables": vars}, &r); err != nil {
 		return err
 	}
 	if len(r.Errors) > 0 {
@@ -129,7 +107,6 @@ func (g *github) send(req *http.Request, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	g.noteLimit(resp.Header)
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return err
@@ -148,16 +125,28 @@ func (g *github) send(req *http.Request, out any) error {
 	return json.Unmarshal(data, out)
 }
 
-// noteLimit records the rate limit that an answer's headers report.
-func (g *github) noteLimit(h http.Header) {
-	resource := h.Get("X-RateLimit-Resource")
-	remaining, err1 := strconv.Atoi(h.Get("X-RateLimit-Remaining"))
-	reset, err2 := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64)
-	if resource == "" || err1 != nil || err2 != nil {
-		return
+// rateLimit is what is left of one of GitHub's rate limits until it resets.
+type rateLimit struct {
+	Remaining int
+	Reset     time.Time
+}
+
+// rateLimits returns what is left of the GraphQL and REST rate limits of
+// the installation whose token the worker uses. The workers and agent
+// jobs of an installation share these. Asking costs nothing.
+func (g *github) rateLimits(ctx context.Context) (graphql, rest rateLimit, err error) {
+	var r struct {
+		Resources map[string]struct {
+			Remaining int   `json:"remaining"`
+			Reset     int64 `json:"reset"`
+		} `json:"resources"`
 	}
-	if g.limits == nil {
-		g.limits = map[string]rateLimit{}
+	if err := g.rest(ctx, http.MethodGet, "/rate_limit", nil, &r); err != nil {
+		return graphql, rest, err
 	}
-	g.limits[resource] = rateLimit{remaining, time.Unix(reset, 0)}
+	get := func(name string) rateLimit {
+		l := r.Resources[name]
+		return rateLimit{l.Remaining, time.Unix(l.Reset, 0)}
+	}
+	return get("graphql"), get("core"), nil
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -50,6 +49,21 @@ func candidates(items []Item, c *Config) []candidate {
 // step does the first job that no other worker has claimed. It reports
 // whether there was one, and the job's error, if any.
 func (w *worker) step(ctx context.Context) (bool, error) {
+	// Leave the rest of the rate limits to the jobs that are running.
+	graphql, rest, err := w.gh.rateLimits(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, l := range []struct {
+		name string
+		rateLimit
+	}{{"GraphQL", graphql}, {"REST", rest}} {
+		if l.Remaining < w.c.RateReserve {
+			log.Printf("GitHub's %s rate limit has %d left until %s UTC, less than rate_reserve; waiting",
+				l.name, l.Remaining, l.Reset.UTC().Format(time.TimeOnly))
+			return false, nil
+		}
+	}
 	// Claims are fetched before the survey. A worker releases its claim
 	// only after its job is done, so any claim released since then shows
 	// its job's work in the survey.
@@ -60,11 +74,6 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	items, err := survey(ctx, w.gh, w.c)
 	if err != nil {
 		return false, err
-	}
-	if r, l, ok := w.gh.low(w.c.RateReserve); ok {
-		log.Printf("GitHub's %s rate limit has %d left until %s, less than rate_reserve; starting no job",
-			r, l.Remaining, l.Reset.UTC().Format(time.TimeOnly))
-		return false, nil
 	}
 	for _, cand := range candidates(items, w.c) {
 		key, old := cand.key(), ""
@@ -279,9 +288,11 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	for _, r := range slices.Sorted(maps.Keys(w.gh.limits)) {
-		l := w.gh.limits[r]
-		fmt.Fprintf(out, "GitHub's %s rate limit: %d left until %s\n", r, l.Remaining, l.Reset.UTC().Format(time.TimeOnly))
+	graphql, rest, err := w.gh.rateLimits(ctx)
+	if err != nil {
+		return err
 	}
+	fmt.Fprintf(out, "GitHub rate limits: GraphQL %d left until %s UTC, REST %d left until %s UTC\n",
+		graphql.Remaining, graphql.Reset.UTC().Format(time.TimeOnly), rest.Remaining, rest.Reset.UTC().Format(time.TimeOnly))
 	return nil
 }

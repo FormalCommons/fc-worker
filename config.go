@@ -44,9 +44,9 @@ type Config struct {
 	// Poll is how long to wait when there is nothing to do, and after an
 	// error. Default 2m.
 	Poll duration `json:"poll"`
-	// RateReserve is how much of each of GitHub's rate limits to leave for
-	// the jobs that are running: the worker starts no job while fewer
-	// points or requests remain. Default 1000.
+	// RateReserve is how much of GitHub's GraphQL and REST rate limits to
+	// leave for the jobs that are running: the worker waits while fewer
+	// points or requests remain. Default 1000; 1 turns the check off.
 	RateReserve int `json:"rate_reserve"`
 	// Logs is a directory for the jobs' output: each job's standard output
 	// goes to a file of its own there, which the worker never deletes.
