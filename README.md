@@ -34,7 +34,7 @@ pull request from GitHub. The first row that matches decides:
 | Anything opened by someone outside the project | outside | nothing; a maintainer decides |
 | Issue labelled `proposed` or `close-proposed` | needs triage | a **triage** job |
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
-| Issue that an open pull request from the project will close | in review | nothing; the pull request moves it |
+| Issue that an open pull request from the project will close, or that a pull request merged less than five minutes ago will close (GitHub closes it seconds after the merge) | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
 | Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
@@ -104,7 +104,11 @@ The worker also acts on its own, without an agent:
 
 - It turns on auto-merge for an approved pull request that the agent App
   opened, which puts it in the merge queue as soon as the ruleset allows.
-  If that fails, it parks the pull request.
+  If that fails, it looks at the pull request again ten seconds later,
+  since a pull request still looks open for a few seconds after it
+  merges. It parks the pull request unless it has merged, closed, joined
+  the merge queue or had auto-merge turned on meanwhile; it parks it too
+  if it cannot read it again.
 - It labels an item `needs-human` and says why, when
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last
@@ -268,7 +272,7 @@ unset or empty, the worker refuses to start.
 | `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
-| `poll` | How long to wait when there is nothing to do, and after an error. Default `2m`. |
+| `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 

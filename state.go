@@ -19,7 +19,7 @@ type Item struct {
 	// Issues only.
 	OpenBlockers  int // open issues that block this one
 	OpenSubIssues int
-	OpenPRs       int // open pull requests that will close this issue
+	ClosingPRs    int // pull requests that will close this issue: see closing
 
 	// Pull requests only.
 	Draft        bool
@@ -65,8 +65,8 @@ func next(it Item, c *Config) (job, why string) {
 			return "", "blocked by open issues"
 		case it.OpenSubIssues > 0:
 			return "", "has open sub-issues"
-		case it.OpenPRs > 0:
-			return "", "an open pull request will close it"
+		case it.ClosingPRs > 0:
+			return "", "a pull request will close it"
 		}
 		return "work", "ready"
 	}
@@ -144,7 +144,7 @@ const issuesQuery = `query($owner: String!, $name: String!, $after: String) {
         labels(first: 30) { nodes { name } }
         blockedBy(first: 50) { nodes { state } }
         subIssues(first: 100) { nodes { state } }
-        closedByPullRequestsReferences(first: 20) { nodes { state authorAssociation author { __typename login } } }
+        closedByPullRequestsReferences(first: 20) { nodes { state mergedAt authorAssociation author { __typename login } } }
       }
     }
   }
@@ -223,11 +223,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 						BlockedBy         states `json:"blockedBy"`
 						SubIssues         states `json:"subIssues"`
 						ClosedBy          struct {
-							Nodes []struct {
-								State             string `json:"state"`
-								AuthorAssociation string `json:"authorAssociation"`
-								Author            *actor `json:"author"`
-							} `json:"nodes"`
+							Nodes []closingPR `json:"nodes"`
 						} `json:"closedByPullRequestsReferences"`
 					} `json:"nodes"`
 				} `json:"issues"`
@@ -241,13 +237,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 				ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
 				Outside:      outside(n.Author, n.AuthorAssociation, c),
 				OpenBlockers: n.BlockedBy.open(), OpenSubIssues: n.SubIssues.open(),
-			}
-			// A pull request from outside the project does not hold up an
-			// issue, since nothing moves it.
-			for _, pr := range n.ClosedBy.Nodes {
-				if pr.State == "OPEN" && !outside(pr.Author, pr.AuthorAssociation, c) {
-					it.OpenPRs++
-				}
+				ClosingPRs: closing(n.ClosedBy.Nodes, c, time.Now()),
 			}
 			items = append(items, it)
 		}
@@ -332,6 +322,37 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 	}
 	slices.SortFunc(items, func(a, b Item) int { return a.Number - b.Number })
 	return items, nil
+}
+
+// closingPR is a pull request that closes an issue when it merges.
+type closingPR struct {
+	State             string    `json:"state"`
+	MergedAt          time.Time `json:"mergedAt"`
+	AuthorAssociation string    `json:"authorAssociation"`
+	Author            *actor    `json:"author"`
+}
+
+// closeDelay is how long an issue may still look open after a pull request
+// that closes it merges. GitHub closes it within seconds; an issue that is
+// still open long after is open for another reason, such as a person
+// reopening it.
+const closeDelay = 5 * time.Minute
+
+// closing counts the pull requests that will close an issue: open ones from
+// the project, and ones that merged less than closeDelay ago. An open pull
+// request from outside the project does not hold up an issue, since nothing
+// moves it.
+func closing(prs []closingPR, c *Config, now time.Time) int {
+	n := 0
+	for _, pr := range prs {
+		switch {
+		case pr.State == "OPEN" && !outside(pr.Author, pr.AuthorAssociation, c):
+			n++
+		case pr.State == "MERGED" && now.Sub(pr.MergedAt) < closeDelay:
+			n++
+		}
+	}
+	return n
 }
 
 // actor is the author of an issue, pull request, review or comment.

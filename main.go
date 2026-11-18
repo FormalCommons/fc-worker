@@ -6,6 +6,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -53,8 +54,15 @@ func main() {
 		if !found || err != nil {
 			select {
 			case <-ctx.Done():
-			case <-time.After(c.Poll.Duration):
+			case <-time.After(jitter(c.Poll.Duration)):
 			}
 		}
 	}
+}
+
+// jitter returns d, give or take a quarter at random, so that workers that
+// started together do not keep surveying together and racing for the same
+// items.
+func jitter(d time.Duration) time.Duration {
+	return d*3/4 + rand.N(d/2+1)
 }

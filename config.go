@@ -42,7 +42,7 @@ type Config struct {
 	// was last labelled needs-human. Default 20.
 	MaxRounds int `json:"max_rounds"`
 	// Poll is how long to wait when there is nothing to do, and after an
-	// error. Default 2m.
+	// error, give or take a quarter at random. Default 2m.
 	Poll duration `json:"poll"`
 	// RateReserve is how much of GitHub's GraphQL and REST rate limits to
 	// leave for the jobs that are running: the worker waits while fewer
