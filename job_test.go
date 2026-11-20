@@ -6,8 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 )
+
+func mustParse(t *testing.T, file string) *template.Template {
+	t.Helper()
+	tmpl, err := parsePrompt(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tmpl
+}
 
 func TestRunJob(t *testing.T) {
 	dir := t.TempDir()
@@ -19,7 +29,7 @@ func TestRunJob(t *testing.T) {
 		Command: []string{"sh", "-c", `cp "$1" ` + out, "sh", "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if started, err := runJob(context.Background(), c, "work", Item{Number: 7, Title: "Do it"}, "ready"); !started || err != nil {
+	if started, err := runJob(context.Background(), c, "work", mustParse(t, prompt), Item{Number: 7, Title: "Do it"}, "ready"); !started || err != nil {
 		t.Fatal(started, err)
 	}
 	got, _ := os.ReadFile(out)
@@ -38,7 +48,7 @@ func TestRunJobLogs(t *testing.T) {
 		Command: []string{"sh", "-c", "echo transcript; echo status >&2", "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if started, err := runJob(context.Background(), c, "review", Item{PR: true, Number: 3}, "latest commit not reviewed"); !started || err != nil {
+	if started, err := runJob(context.Background(), c, "review", mustParse(t, prompt), Item{PR: true, Number: 3}, "latest commit not reviewed"); !started || err != nil {
 		t.Fatal(started, err)
 	}
 	files, _ := filepath.Glob(filepath.Join(logs, "*-w1-pr-3-review.log"))
@@ -53,7 +63,7 @@ func TestRunJobLogs(t *testing.T) {
 	ran := filepath.Join(dir, "ran")
 	c.Logs = filepath.Join(prompt, "logs") // under a file
 	c.Jobs["review"] = Job{Prompt: prompt, Command: []string{"touch", ran, "{prompt}"}, Timeout: duration{time.Minute}}
-	if started, err := runJob(context.Background(), c, "review", Item{PR: true, Number: 3}, "latest commit not reviewed"); started || err == nil {
+	if started, err := runJob(context.Background(), c, "review", mustParse(t, prompt), Item{PR: true, Number: 3}, "latest commit not reviewed"); started || err == nil {
 		t.Errorf("started %v, error %v; want a job that did not start", started, err)
 	}
 	if _, err := os.Stat(ran); err == nil {
@@ -74,7 +84,7 @@ func TestRunJobTimeout(t *testing.T) {
 		Timeout: duration{500 * time.Millisecond},
 	}}}
 	start := time.Now()
-	if started, err := runJob(context.Background(), c, "fix", Item{PR: true, Number: 1}, "checks failed"); !started || err == nil {
+	if started, err := runJob(context.Background(), c, "fix", mustParse(t, prompt), Item{PR: true, Number: 1}, "checks failed"); !started || err == nil {
 		t.Errorf("started %v, error %v; want a job that started and timed out", started, err)
 	}
 	if d := time.Since(start); d > 10*time.Second {
@@ -94,7 +104,7 @@ func TestRunJobNotStarted(t *testing.T) {
 		Command: []string{filepath.Join(dir, "missing"), "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if started, err := runJob(context.Background(), c, "work", Item{Number: 1}, "ready"); started || err == nil {
+	if started, err := runJob(context.Background(), c, "work", mustParse(t, prompt), Item{Number: 1}, "ready"); started || err == nil {
 		t.Errorf("started %v, error %v; want a job that did not start", started, err)
 	}
 }

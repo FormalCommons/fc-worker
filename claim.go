@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -93,32 +94,42 @@ func (c *claims) release(ctx context.Context, key, job, commit string) error {
 
 // init creates the local bare repository, if it does not exist yet.
 func (c *claims) init(ctx context.Context) error {
-	if out, err := exec.CommandContext(ctx, "git", "init", "--quiet", "--bare", c.dir).CombinedOutput(); err != nil {
-		return fmt.Errorf("git init: %v: %s", err, out)
-	}
-	return nil
+	_, err := runGit(ctx, "", nil, "init", "--quiet", "--bare", c.dir)
+	return err
 }
 
 // git runs git in the local bare repository. Fetches and pushes
 // authenticate with a header, which keeps the token out of the command
 // line.
 func (c *claims) git(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = c.dir
-	cmd.Env = append(os.Environ(),
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_AUTHOR_NAME=fc-worker", "GIT_AUTHOR_EMAIL=fc-worker@invalid",
-		"GIT_COMMITTER_NAME=fc-worker", "GIT_COMMITTER_EMAIL=fc-worker@invalid",
-	)
+	var env []string
 	if c.token != nil && (args[0] == "fetch" || args[0] == "push") {
 		token, err := c.token(ctx)
 		if err != nil {
 			return "", err
 		}
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-		cmd.Env = append(cmd.Env, "GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=Authorization: Basic "+basic)
+		env = []string{"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=Authorization: Basic " + basic}
 	}
+	return runGit(ctx, c.dir, env, args...)
+}
+
+// runGit runs git in dir, or in the current directory if dir is "", with
+// env added to the worker's environment, and returns its standard output.
+func runGit(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=fc-worker", "GIT_AUTHOR_EMAIL=fc-worker@invalid",
+		"GIT_COMMITTER_NAME=fc-worker", "GIT_COMMITTER_EMAIL=fc-worker@invalid",
+	)
+	cmd.Env = append(cmd.Env, env...)
+	// Stop git with SIGTERM, on which it removes its lock files; SIGKILL
+	// would leave them, and they would make later commands fail.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

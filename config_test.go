@@ -57,6 +57,35 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestConfigPrompts(t *testing.T) {
+	t.Setenv("TEST_BROKER_TOKEN", "secret")
+	withPrompts := strings.Replace(testConfig, `"name": "w1"`, `"name": "w1", "prompts": {"repo": "https://example.com/p.git"}`, 1)
+	c, err := loadConfig(writeConfig(t, strings.Replace(withPrompts, `"fix.md"`, `"jobs/./fix.md"`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := c.Prompts; p.Ref != "main" || p.Refresh.Duration != time.Minute {
+		t.Errorf("prompts defaults %+v", p)
+	}
+	if got := c.Jobs["fix"].Prompt; got != "jobs/fix.md" {
+		t.Errorf("fix prompt %q, want jobs/fix.md", got)
+	}
+	for _, tc := range []struct{ old, new, want string }{
+		{`"work.md"`, `"/etc/work.md"`, "path in the prompts repository"},
+		{`"work.md"`, `"../work.md"`, "path in the prompts repository"},
+		{`"work.md"`, `"."`, "path in the prompts repository"},
+		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "ref": "--upload-pack=x"}`, "must not start"},
+		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "ref": "main:x"}`, "branch, tag or commit"},
+		{`"repo": "https://example.com/p.git"`, `"ref": "main"`, "prompts: repo"},
+		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "refresh": "-1m"}`, "refresh"},
+	} {
+		_, err := loadConfig(writeConfig(t, strings.Replace(withPrompts, tc.old, tc.new, 1)))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s -> %s: %v, want an error about %q", tc.old, tc.new, err, tc.want)
+		}
+	}
+}
+
 func TestConfigErrors(t *testing.T) {
 	t.Setenv("TEST_BROKER_TOKEN", "secret")
 	for _, tc := range []struct{ old, new, want string }{

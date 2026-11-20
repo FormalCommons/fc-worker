@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,6 +35,9 @@ type Config struct {
 	Maintainers []string `json:"maintainers"`
 	// Jobs holds how to run each job: "work", "fix", "review" and "triage".
 	Jobs map[string]Job `json:"jobs"`
+	// Prompts, if set, is a git repository that holds the prompts. Each
+	// job's Prompt is then a path in it.
+	Prompts *Prompts `json:"prompts"`
 	// IdleRounds is how many rounds in a row that change nothing an item
 	// may have before the worker labels it needs-human. Default 3.
 	IdleRounds int `json:"idle_rounds"`
@@ -60,9 +64,22 @@ type Broker struct {
 	Token string `json:"token"`
 }
 
+// Prompts is a git repository that holds the prompts.
+type Prompts struct {
+	// Repo is its URL, which git can fetch with the credentials of the
+	// user the worker runs as, such as https://github.com/owner/name.
+	Repo string `json:"repo"`
+	// Ref is the branch to follow. Default "main".
+	Ref string `json:"ref"`
+	// Refresh is how long the worker uses a commit it fetched before it
+	// fetches again, which it does before it claims an item. Default 1m.
+	Refresh duration `json:"refresh"`
+}
+
 // Job is how to run one kind of job.
 type Job struct {
-	// Prompt is the path of the prompt, a Go text/template.
+	// Prompt is the path of the prompt, a Go text/template: a file, or a
+	// path in the prompts repository if the config names one.
 	Prompt string `json:"prompt"`
 	// Command runs the job. Each "{prompt}" in it is replaced with the
 	// path of the rendered prompt.
@@ -128,6 +145,10 @@ func (c *Config) expandEnv() error {
 	for i := range c.Maintainers {
 		expand(&c.Maintainers[i])
 	}
+	if c.Prompts != nil {
+		expand(&c.Prompts.Repo)
+		expand(&c.Prompts.Ref)
+	}
 	for name, j := range c.Jobs {
 		expand(&j.Prompt)
 		for i := range j.Command {
@@ -177,6 +198,30 @@ func (c *Config) validate() error {
 	for _, name := range jobNames {
 		if _, ok := c.Jobs[name]; !ok {
 			return fmt.Errorf("jobs: %s is missing", name)
+		}
+	}
+	if p := c.Prompts; p != nil {
+		if p.Repo == "" {
+			return errors.New("prompts: repo is required")
+		}
+		if strings.HasPrefix(p.Repo, "-") || strings.HasPrefix(p.Ref, "-") || strings.ContainsAny(p.Ref, ":*?[\\ ") {
+			return errors.New("prompts: repo and ref must not start with '-', and ref must be a branch, tag or commit")
+		}
+		if p.Ref == "" {
+			p.Ref = "main"
+		}
+		if p.Refresh.Duration == 0 {
+			p.Refresh.Duration = time.Minute
+		}
+		if p.Refresh.Duration < 0 {
+			return errors.New("prompts: refresh must not be negative")
+		}
+		for name, j := range c.Jobs {
+			if !filepath.IsLocal(j.Prompt) || filepath.Clean(j.Prompt) == "." {
+				return fmt.Errorf("jobs: %s: prompt must be a path in the prompts repository, such as work.md", name)
+			}
+			j.Prompt = filepath.ToSlash(filepath.Clean(j.Prompt))
+			c.Jobs[name] = j
 		}
 	}
 	if c.IdleRounds == 0 {

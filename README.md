@@ -64,10 +64,11 @@ an issue of their own.
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
 
 Each job is one fresh agent in a fresh container, started with the job's
-prompt. The prompts are in [prompts/](prompts/); a repository can use its
-own. Fix only runs on pull requests that the agent App opened. Other pull
-requests get reviews, and their authors fix them. Agents open pull requests
-ready for review, never as drafts.
+prompt. Example prompts are in [prompts/](prompts/). A project can use its
+own, as files or from a git repository that the workers follow during a run
+(see [Configuration](#configuration)). Fix only runs on pull requests that
+the agent App opened. Other pull requests get reviews, and their authors fix
+them. Agents open pull requests ready for review, never as drafts.
 
 ## The worker
 
@@ -215,7 +216,7 @@ fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-lis
 | Flag | Meaning |
 |---|---|
 | `-config` | The config file. |
-| `-state` | A directory for the worker's own files: a bare git repository per worker, which holds its claim commits. |
+| `-state` | A directory for the worker's own files: bare git repositories per worker, which hold its claim commits and the prompts it fetched. |
 | `-list` | Print every open issue and pull request with its next job and who holds its claim, and GitHub's rate limits, then exit. |
 
 The worker logs a line when a job starts and when it ends. A job's
@@ -226,6 +227,17 @@ passes it through. The worker never deletes these files. A job's standard
 error always goes to the worker's. SIGTERM or SIGINT stops the worker: a
 running job gets SIGTERM, and the worker releases its claim before it
 exits.
+
+SIGHUP asks the worker to exit once its job, if it has one, is done and
+its claim released; an idle worker exits at once. Its service manager then
+starts it again, so a new binary or config takes over without stopping any
+job. Send SIGHUP to the worker's process alone: `podman run` passes signals
+on to the job's container, which would end the job. Under systemd, give the
+unit `ExecReload=kill -HUP $MAINPID` and `Restart=always`, since an exit
+after SIGHUP is a clean one, which `Restart=on-failure` would leave stopped.
+Then install the new files and run `systemctl reload 'fc-worker@*'`. A
+worker from before SIGHUP was handled exits at once on it, stopping its job,
+so restart it the first time instead.
 
 ### Configuration
 
@@ -269,7 +281,8 @@ unset or empty, the worker refuses to start.
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
 | `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
-| `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
+| `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. `ref` can also be a tag or a commit, to hold the prompts still. |
+| `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
@@ -279,12 +292,27 @@ unset or empty, the worker refuses to start.
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
 (`issue` or `pull request`), `{{.Number}}`, `{{.Title}}` and `{{.Why}}`, why
-the item needs the job, such as "checks failed". The worker reads the
-prompt again for every job, so it can change while the worker runs. Files
-named `_*.md` beside a prompt are read with it, so prompts can share
-text: [prompts/_checks.md](prompts/_checks.md), the points that
-work, fix and review jobs all check, is included with
-`{{template "_checks.md" .}}`.
+the item needs the job, such as "checks failed". Files named `_*.md`
+beside a prompt are read with it, so prompts can share text:
+[prompts/_checks.md](prompts/_checks.md), the points that work, fix and
+review jobs all check, is included with `{{template "_checks.md" .}}`.
+
+The worker reads the prompt again for every job, so prompts can change
+while it runs. With `prompts`, they live in a git repository of their own,
+and a change takes effect once it reaches the branch the workers follow.
+Before it claims an item, a worker fetches the branch if it last fetched
+`refresh` ago or more. It takes up the new commit only if every job's
+prompt renders from it, and reads each job's prompt and its `_*.md` files
+from that one commit, so they always match. If a fetch fails, or the new
+commit does not render, the worker goes on with the commit it has, which
+it keeps across restarts; with none yet, it claims nothing. Its round
+comment names the commit, as "with prompts at 1a2b3c4d5e6f", and its log
+says which commit each job's prompt came from.
+
+Anyone who can push to that branch decides what every agent is told. Keep
+the repository out of the agents' reach: leave it out of the brokers'
+`repositories`, or out of the Apps' installations, and let only people push
+to it.
 
 `agent.env` and `reviewer.env` give the job's container what it needs:
 `HIVE_BROKER_URL` and `HIVE_BROKER_TOKEN` for its broker client,
