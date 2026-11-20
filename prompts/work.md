@@ -27,21 +27,31 @@ Then make progress on the issue in one of these ways:
 
 - **Do it.** Work on a branch named `fc/issue-{{.Number}}`. Make sure the
   work builds and passes the checks that `AGENTS.md` describes, commit,
-  push, and open a pull request with `gh pr create`, ready for review, not
-  as a draft. Its description says what it does and why, and ends with
-  `Closes #{{.Number}}`.
+  check it against the points below, push, and open a pull request with
+  `gh pr create`, ready for review, not as a draft. Its description says
+  what it does and why, and ends with `Closes #{{.Number}}`.
 - **Split it.** If the issue is too big for one pull request, or needs other
   work first, create an issue for each part, labelled `proposed`, with a
   clear goal and a way to tell when it is done. Make each part a sub-issue
-  of #{{.Number}}, or mark it as blocking #{{.Number}}. Do not open a pull
-  request in this case: #{{.Number}} comes back to an agent when its parts
-  are done.
+  of #{{.Number}}, or mark it as blocking #{{.Number}}. Create the parts in
+  an order where each part's blockers come before it, and link each part
+  as soon as you create it, to #{{.Number}} and to the issues that block it,
+  before you create the next: a part without its links looks ready to
+  work on. Do not open a pull request in this case: #{{.Number}} comes back
+  to an agent when its parts are done.
 - **Propose closing it.** If the issue needs no change, because it is done
   already, a duplicate or mistaken, comment why and label it
   `close-proposed`. Do not close it yourself. Give the evidence, so that
   others can check it quickly. If it is done already, say for each thing
   it asks for where it is done: the file and the name of the definition,
   function or theorem, and the pull request or issue that did it.
+
+Before you push work for a pull request, review it as its reviewer will:
+read your committed changes (`git diff origin/main...`, or against
+whichever branch the pull request targets) and check each of these,
+fixing what falls short.
+
+{{template "_checks.md" .}}
 
 Finish with a short comment on the issue that says what you did.
 

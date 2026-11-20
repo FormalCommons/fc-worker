@@ -34,7 +34,7 @@ type Item struct {
 	Decision     string    // GitHub's sum of the reviews that count: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" if none are required
 	AutoMerge    bool
 	Queued       bool
-	RemovedAt    time.Time // when it last left the merge queue without merging
+	Removals     int // times it left the merge queue without merging since the reviewer's verdict and the latest commit, counting at most 2
 }
 
 // Next jobs that the worker does by itself, without an agent.
@@ -81,8 +81,8 @@ func next(it Item, c *Config) (job, why string) {
 		fix = "the reviewer requested changes"
 	case it.Requested:
 		fix = "a person requested changes"
-	case it.Review == "APPROVED" && it.RemovedAt.After(it.ReviewedAt):
-		fix = "removed from the merge queue"
+	case it.Review == "APPROVED" && it.Removals > 1 && !it.Queued && !it.AutoMerge:
+		fix = "removed from the merge queue twice since its approval and its latest commit"
 	}
 	switch {
 	case fix != "" && !it.Ours:
@@ -109,6 +109,15 @@ func next(it Item, c *Config) (job, why string) {
 		return park, "approved by the reviewer, but a person's request for changes stands"
 	case it.Decision == "REVIEW_REQUIRED":
 		return park, "approved by the reviewer, but GitHub still requires a review: the reviewer's approval does not count, or more are required"
+	// Removed from the merge queue once since the approval and the latest
+	// commit: put it back once before a fix job, since the cause may be
+	// outside the code, such as a failed download in CI. A second removal
+	// leads to a fix. A commit that the fix pushes starts the count again,
+	// even a bare merge of the base branch, onto which GitHub moves the
+	// approval; max_rounds bounds these rounds, and idle_rounds parks a pull
+	// request whose fixes push nothing.
+	case !it.AutoMerge && !it.Queued && it.Removals == 1:
+		return autoMerge, "removed from the merge queue once since its approval and its latest commit; it goes back in once before a fix"
 	case !it.AutoMerge && !it.Queued:
 		return autoMerge, "approved"
 	}
@@ -159,10 +168,10 @@ const pullsQuery = `query($owner: String!, $name: String!, $after: String) {
         author { __typename login }
         labels(first: 30) { nodes { name } }
         autoMergeRequest { enabledAt }
-        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
         reviews(last: 100) { nodes { author { __typename login } authorAssociation state submittedAt commit { oid } } }
-        timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-          nodes { ... on RemovedFromMergeQueueEvent { createdAt } }
+        timelineItems(last: 3, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+          nodes { ... on RemovedFromMergeQueueEvent { createdAt reason } }
         }
       }
     }
@@ -268,6 +277,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 						Commits           struct {
 							Nodes []struct {
 								Commit struct {
+									CommittedDate     time.Time `json:"committedDate"`
 									StatusCheckRollup *struct {
 										State string `json:"state"`
 									} `json:"statusCheckRollup"`
@@ -278,9 +288,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 							Nodes []review `json:"nodes"`
 						} `json:"reviews"`
 						TimelineItems struct {
-							Nodes []struct {
-								CreatedAt time.Time `json:"createdAt"`
-							} `json:"nodes"`
+							Nodes []removal `json:"nodes"`
 						} `json:"timelineItems"`
 					} `json:"nodes"`
 				} `json:"pullRequests"`
@@ -298,11 +306,12 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 				Decision: n.ReviewDecision, AutoMerge: n.AutoMergeRequest != nil, Queued: n.IsInMergeQueue,
 			}
 			it.Ours = n.Author.is(c.Agent)
-			if c := n.Commits.Nodes; len(c) > 0 && c[0].Commit.StatusCheckRollup != nil {
-				it.Checks = c[0].Commit.StatusCheckRollup.State
-			}
-			if t := n.TimelineItems.Nodes; len(t) > 0 {
-				it.RemovedAt = t[0].CreatedAt
+			var headAt time.Time
+			if c := n.Commits.Nodes; len(c) > 0 {
+				headAt = c[0].Commit.CommittedDate
+				if c[0].Commit.StatusCheckRollup != nil {
+					it.Checks = c[0].Commit.StatusCheckRollup.State
+				}
 			}
 			for _, r := range verdicts(n.Reviews.Nodes, it.Head) {
 				switch {
@@ -312,6 +321,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 					it.Requested = true
 				}
 			}
+			it.Removals = removals(n.TimelineItems.Nodes, it.ReviewedAt, headAt, time.Now())
 			items = append(items, it)
 		}
 		p := r.Repository.PullRequests.PageInfo
@@ -322,6 +332,32 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 	}
 	slices.SortFunc(items, func(a, b Item) int { return a.Number - b.Number })
 	return items, nil
+}
+
+// removal is a pull request's leaving the merge queue. Its reason is
+// "merged" when it left by merging, and otherwise something like
+// "failed_checks" or "merge_conflict".
+type removal struct {
+	CreatedAt time.Time `json:"createdAt"`
+	Reason    string    `json:"reason"`
+}
+
+// removals counts the removals that were not merges and came after both
+// the reviewer's verdict and the latest commit. A commit dated after now,
+// by a wrong clock, does not count, since it would hide every removal and
+// so re-queue the pull request without end.
+func removals(removed []removal, verdict, head, now time.Time) int {
+	since := verdict
+	if head.After(since) && !head.After(now) {
+		since = head
+	}
+	n := 0
+	for _, r := range removed {
+		if r.CreatedAt.After(since) && !strings.EqualFold(r.Reason, "merged") {
+			n++
+		}
+	}
+	return n
 }
 
 // closingPR is a pull request that closes an issue when it merges.

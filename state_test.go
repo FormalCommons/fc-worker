@@ -7,7 +7,6 @@ import (
 
 func TestNext(t *testing.T) {
 	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]"}
-	t0 := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 	// ours makes it a pull request that the agent App opened, with checks
 	// passing unless the case says otherwise.
 	ours := func(it Item) Item {
@@ -42,8 +41,12 @@ func TestNext(t *testing.T) {
 		{"a person requested changes", ours(Item{Requested: true, Review: "APPROVED"}), "fix"},
 		{"person's PR, a person requested changes", Item{PR: true, Checks: "SUCCESS", Requested: true}, ""},
 		{"conflict after approval", ours(Item{Conflict: true, Review: "APPROVED"}), "fix"},
-		{"removed from queue", ours(Item{Review: "APPROVED", ReviewedAt: t0, RemovedAt: t0.Add(time.Hour)}), "fix"},
-		{"removed before approval", ours(Item{Review: "APPROVED", ReviewedAt: t0, RemovedAt: t0.Add(-time.Hour)}), autoMerge},
+		{"removed from queue once", ours(Item{Review: "APPROVED", Removals: 1}), autoMerge},
+		{"removed once, back in the queue", ours(Item{Review: "APPROVED", Removals: 1, Queued: true}), ""},
+		{"removed once, auto-merge on", ours(Item{Review: "APPROVED", Removals: 1, AutoMerge: true}), ""},
+		{"removed from queue twice", ours(Item{Review: "APPROVED", Removals: 2}), "fix"},
+		{"removed twice, back in the queue", ours(Item{Review: "APPROVED", Removals: 2, Queued: true}), ""},
+		{"removed once, approval does not count", ours(Item{Review: "APPROVED", Removals: 1, Decision: "REVIEW_REQUIRED"}), park},
 		{"checks running", ours(Item{Checks: "PENDING"}), ""},
 		{"no checks yet", Item{PR: true, Ours: true}, ""},
 		{"not reviewed", ours(Item{}), "review"},
@@ -90,6 +93,30 @@ func TestVerdicts(t *testing.T) {
 	}
 	if got[actor{"User", "fc-reviewer"}].State != "CHANGES_REQUESTED" || got[actor{"User", "bob"}].State != "APPROVED" || len(got) != 3 {
 		t.Errorf("verdicts %+v", got)
+	}
+}
+
+func TestRemovals(t *testing.T) {
+	t0 := time.Date(2026, 11, 20, 1, 51, 0, 0, time.UTC) // the reviewer's verdict
+	failed := func(d time.Duration) removal { return removal{t0.Add(d), "failed_checks"} }
+	for _, tc := range []struct {
+		name    string
+		removed []removal
+		head    time.Time
+		want    int
+	}{
+		{"never removed", nil, t0.Add(-time.Hour), 0},
+		{"removed before the verdict", []removal{failed(-time.Hour)}, t0.Add(-2 * time.Hour), 0},
+		{"removed once since", []removal{failed(-time.Hour), failed(8 * time.Minute)}, t0.Add(-2 * time.Hour), 1},
+		{"removed twice since", []removal{failed(8 * time.Minute), failed(time.Hour)}, t0.Add(-time.Hour), 2},
+		{"removed twice, then a new commit", []removal{failed(8 * time.Minute), failed(time.Hour)}, t0.Add(2 * time.Hour), 0},
+		{"removed, a new commit, removed again", []removal{failed(8 * time.Minute), failed(3 * time.Hour)}, t0.Add(2 * time.Hour), 1},
+		{"left by merging", []removal{failed(8 * time.Minute), {t0.Add(time.Hour), "merged"}}, t0.Add(-time.Hour), 1},
+		{"commit dated in the future", []removal{failed(8 * time.Minute), failed(time.Hour)}, t0.Add(48 * time.Hour), 2},
+	} {
+		if got := removals(tc.removed, t0, tc.head, t0.Add(4*time.Hour)); got != tc.want {
+			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 
