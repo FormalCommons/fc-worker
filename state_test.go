@@ -97,18 +97,23 @@ func TestVerdicts(t *testing.T) {
 }
 
 func TestRemovals(t *testing.T) {
-	t0 := time.Date(2026, 11, 20, 1, 51, 0, 0, time.UTC)
+	t0 := time.Date(2026, 11, 20, 1, 51, 0, 0, time.UTC) // the reviewer's verdict
+	failed := func(d time.Duration) removal { return removal{t0.Add(d), "failed_checks"} }
 	for _, tc := range []struct {
 		name    string
-		removed []time.Time
+		removed []removal
+		head    time.Time
 		want    int
 	}{
-		{"never removed", nil, 0},
-		{"removed before the verdict", []time.Time{t0.Add(-time.Hour)}, 0},
-		{"removed once since", []time.Time{t0.Add(-time.Hour), t0.Add(8 * time.Minute)}, 1},
-		{"removed twice since", []time.Time{t0.Add(8 * time.Minute), t0.Add(time.Hour)}, 2},
+		{"never removed", nil, t0.Add(-time.Hour), 0},
+		{"removed before the verdict", []removal{failed(-time.Hour)}, t0.Add(-2 * time.Hour), 0},
+		{"removed once since", []removal{failed(-time.Hour), failed(8 * time.Minute)}, t0.Add(-2 * time.Hour), 1},
+		{"removed twice since", []removal{failed(8 * time.Minute), failed(time.Hour)}, t0.Add(-time.Hour), 2},
+		{"removed twice, then a new commit", []removal{failed(8 * time.Minute), failed(time.Hour)}, t0.Add(2 * time.Hour), 0},
+		{"removed, a new commit, removed again", []removal{failed(8 * time.Minute), failed(3 * time.Hour)}, t0.Add(2 * time.Hour), 1},
+		{"left by merging", []removal{failed(8 * time.Minute), {t0.Add(time.Hour), "merged"}}, t0.Add(-time.Hour), 1},
 	} {
-		if got := removals(tc.removed, t0); got != tc.want {
+		if got := removals(tc.removed, t0, tc.head); got != tc.want {
 			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
 		}
 	}

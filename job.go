@@ -26,8 +26,7 @@ type prompt struct {
 }
 
 // parsePrompt parses the prompt at path, together with the files beside it
-// whose names start with "_", which any prompt can include with
-// {{template "_name.md" .}}.
+// named _*.md, which any prompt can include with {{template "_name.md" .}}.
 func parsePrompt(path string) (*template.Template, error) {
 	t, err := template.ParseFiles(path)
 	if err != nil {
