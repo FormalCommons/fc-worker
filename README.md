@@ -66,9 +66,9 @@ an issue of their own.
 Each job is one fresh agent in a fresh container, started with the job's
 prompt. Example prompts are in [prompts/](prompts/). A project can use its
 own, as files or from a git repository that the workers follow during a run
-(see [Configuration](#configuration)). Fix only runs on pull requests that the agent App opened. Other pull
-requests get reviews, and their authors fix them. Agents open pull requests
-ready for review, never as drafts.
+(see [Configuration](#configuration)). Fix only runs on pull requests that
+the agent App opened. Other pull requests get reviews, and their authors fix
+them. Agents open pull requests ready for review, never as drafts.
 
 ## The worker
 

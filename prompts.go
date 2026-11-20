@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -88,8 +89,15 @@ func (p *promptRepo) init(ctx context.Context) error {
 	// would make every later fetch fail. Only this worker uses the
 	// repository.
 	os.Remove(filepath.Join(p.dir, "shallow.lock"))
+	// The config may have changed since, so the commit must render the
+	// jobs' prompts as they are now.
 	if out, err := runGit(ctx, p.dir, nil, "rev-parse", "--verify", "--quiet", currentRef+"^{commit}"); err == nil {
-		p.commit = strings.TrimSpace(out)
+		commit := strings.TrimSpace(out)
+		if err := p.check(ctx, commit); err != nil {
+			log.Printf("prompts: not using %s from before: %v", short(commit), err)
+		} else {
+			p.commit = commit
+		}
 	}
 	return nil
 }
@@ -124,8 +132,12 @@ func (p *promptRepo) update(ctx context.Context) error {
 		return fmt.Errorf("the prompts at %s do not render", short(commit))
 	}
 	if err := p.check(ctx, commit); err != nil {
-		p.rejected = commit
-		return fmt.Errorf("the prompts at %s do not render: %w", short(commit), err)
+		// A git error may pass; a prompt that does not render stays so
+		// until the next push.
+		if errors.Is(err, errRender) {
+			p.rejected = commit
+		}
+		return fmt.Errorf("the prompts at %s: %w", short(commit), err)
 	}
 	if _, err := runGit(ctx, p.dir, nil, "update-ref", currentRef, commit); err != nil {
 		log.Printf("prompts: %v", err)
@@ -148,16 +160,22 @@ func (p *promptRepo) fetch(ctx context.Context) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// check renders every job's prompt from commit, with made-up values, so
-// that a commit whose prompts do not parse or render is never used.
+// errRender is the error of a prompt that does not parse or render.
+var errRender = errors.New("does not render")
+
+// check renders every job's prompt from commit, with made-up values, for an
+// issue and for a pull request, so that a commit whose prompts do not parse
+// or render is never used.
 func (p *promptRepo) check(ctx context.Context, commit string) error {
 	for _, f := range p.files {
 		t, err := p.parse(ctx, commit, f)
-		if err == nil {
-			err = t.Execute(io.Discard, prompt{"o/r", "o", "r", "issue", 1, "A title", "ready"})
-		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", f, err)
+		}
+		for _, kind := range []string{"issue", "pull request"} {
+			if err := t.Execute(io.Discard, prompt{"o/r", "o", "r", kind, 1, "A title", "ready"}); err != nil {
+				return fmt.Errorf("%s %w: %w", f, errRender, err)
+			}
 		}
 	}
 	return nil
@@ -170,21 +188,20 @@ func (p *promptRepo) parse(ctx context.Context, commit, file string) (*template.
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"ls-tree", "-z", "--format=%(objecttype) %(path)", commit}
+	// With -z, ls-tree writes each entry as "<mode> <type> <object>\t<path>",
+	// ended by a NUL, and never quotes the path.
+	args := []string{"ls-tree", "-z", commit}
 	if dir := path.Dir(file); dir != "." {
 		args = append(args, "--", dir+"/")
 	}
-	// Names outside ASCII come out quoted unless core.quotePath is off,
-	// even with -z, when the output has a format.
-	noQuote := []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.quotePath", "GIT_CONFIG_VALUE_0=false"}
-	out, err := runGit(ctx, p.dir, noQuote, args...)
+	out, err := runGit(ctx, p.dir, nil, args...)
 	if err != nil {
 		return nil, err
 	}
 	parts := map[string]string{}
 	for _, entry := range strings.Split(out, "\x00") {
-		kind, name, _ := strings.Cut(entry, " ")
-		if ok, _ := path.Match("_*.md", path.Base(name)); kind != "blob" || !ok {
+		meta, name, _ := strings.Cut(entry, "\t")
+		if ok, _ := path.Match("_*.md", path.Base(name)); !ok || len(strings.Fields(meta)) < 2 || strings.Fields(meta)[1] != "blob" {
 			continue
 		}
 		s, err := runGit(ctx, p.dir, nil, "cat-file", "blob", commit+":"+name)
@@ -193,7 +210,11 @@ func (p *promptRepo) parse(ctx context.Context, commit, file string) (*template.
 		}
 		parts[path.Base(name)] = s
 	}
-	return templates(path.Base(file), text, parts)
+	t, err := templates(path.Base(file), text, parts)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errRender, err)
+	}
+	return t, nil
 }
 
 // short shortens a commit hash for logs and comments.

@@ -97,6 +97,22 @@ func TestPromptRepo(t *testing.T) {
 		t.Errorf("after a broken commit: %q from %s, want the last good commit", got, c)
 	}
 
+	// So is one whose prompt fails only for a pull request.
+	commit(t, src, map[string]string{"jobs/review.md": "{{if eq .Kind \"pull request\"}}{{template \"_pr.md\" .}}{{end}}"})
+	if _, c := render(t, p, "work.md"); c != second {
+		t.Errorf("after a commit broken for pull requests: %s, want the last good commit", c)
+	}
+
+	// After a restart with a config whose prompts the commit in use lacks,
+	// that commit is not used.
+	s := &promptRepo{url: filepath.Join(t.TempDir(), "missing"), ref: "main", dir: dir, files: []string{"jobs/work.md"}}
+	if err := s.init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := s.latest(context.Background()); err == nil {
+		t.Errorf("after a restart with new prompt paths: %s, want an error", c)
+	}
+
 	// A failed fetch keeps the commit in use.
 	p.url = filepath.Join(t.TempDir(), "missing")
 	if got, c := render(t, p, "work.md"); got != "work 7: v2" || c != second {

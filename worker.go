@@ -161,8 +161,8 @@ func (w *worker) prompt(ctx context.Context, job, commit string) (*template.Temp
 // ran, with which prompts, and whether it changed anything or its command
 // failed. These comments count the rounds, and the worker parks the item
 // after idle_rounds rounds in a row that changed nothing, or max_rounds
-// rounds in all. A failed command does not count toward idle_rounds, so that an
-// outage, such as of the gateway, does not park item after item.
+// rounds in all. A failed command does not count toward idle_rounds, so that
+// an outage, such as of the gateway, does not park item after item.
 func (w *worker) record(ctx context.Context, cand candidate, version string, jobErr error) error {
 	items, err := survey(ctx, w.gh, w.c)
 	if err != nil {

@@ -75,6 +75,7 @@ func TestConfigPrompts(t *testing.T) {
 		{`"work.md"`, `"../work.md"`, "path in the prompts repository"},
 		{`"work.md"`, `"."`, "path in the prompts repository"},
 		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "ref": "--upload-pack=x"}`, "must not start"},
+		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "ref": "main:x"}`, "branch, tag or commit"},
 		{`"repo": "https://example.com/p.git"`, `"ref": "main"`, "prompts: repo"},
 		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "refresh": "-1m"}`, "refresh"},
 	} {

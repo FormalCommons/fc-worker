@@ -72,7 +72,7 @@ type Prompts struct {
 	// Ref is the branch to follow. Default "main".
 	Ref string `json:"ref"`
 	// Refresh is how long the worker uses a commit it fetched before it
-	// fetches again, which it does only before a job. Default 1m.
+	// fetches again, which it does before it claims an item. Default 1m.
 	Refresh duration `json:"refresh"`
 }
 
@@ -204,8 +204,8 @@ func (c *Config) validate() error {
 		if p.Repo == "" {
 			return errors.New("prompts: repo is required")
 		}
-		if strings.HasPrefix(p.Repo, "-") || strings.HasPrefix(p.Ref, "-") {
-			return errors.New("prompts: repo and ref must not start with '-'")
+		if strings.HasPrefix(p.Repo, "-") || strings.HasPrefix(p.Ref, "-") || strings.ContainsAny(p.Ref, ":*?[\\ ") {
+			return errors.New("prompts: repo and ref must not start with '-', and ref must be a branch, tag or commit")
 		}
 		if p.Ref == "" {
 			p.Ref = "main"
