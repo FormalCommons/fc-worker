@@ -64,9 +64,9 @@ an issue of their own.
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
 
 Each job is one fresh agent in a fresh container, started with the job's
-prompt. Example prompts are in [prompts/](prompts/); a project can use its
-own, also from a repository of their own that the workers follow during a
-run (see [Configuration](#configuration)). Fix only runs on pull requests that the agent App opened. Other pull
+prompt. Example prompts are in [prompts/](prompts/). A project can use its
+own, as files or from a git repository that the workers follow during a run
+(see [Configuration](#configuration)). Fix only runs on pull requests that the agent App opened. Other pull
 requests get reviews, and their authors fix them. Agents open pull requests
 ready for review, never as drafts.
 
@@ -231,8 +231,13 @@ exits.
 SIGHUP asks the worker to exit once its job, if it has one, is done and
 its claim released; an idle worker exits at once. Its service manager then
 starts it again, so a new binary or config takes over without stopping any
-job: under systemd, install the new files, then
-`systemctl kill --signal=SIGHUP 'fc-worker@*'` with `Restart=always`.
+job. Send SIGHUP to the worker's process alone: `podman run` passes signals
+on to the job's container, which would end the job. Under systemd, give the
+unit `ExecReload=kill -HUP $MAINPID` and `Restart=always`, since an exit
+after SIGHUP is a clean one, which `Restart=on-failure` would leave stopped.
+Then install the new files and run `systemctl reload 'fc-worker@*'`. A
+worker from before SIGHUP was handled exits at once on it, stopping its job,
+so restart it the first time instead.
 
 ### Configuration
 
@@ -276,7 +281,7 @@ unset or empty, the worker refuses to start.
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
 | `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
-| `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. |
+| `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. `ref` can also be a tag or a commit, to hold the prompts still. |
 | `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
@@ -291,20 +296,23 @@ the item needs the job, such as "checks failed". Files named `_*.md`
 beside a prompt are read with it, so prompts can share text:
 [prompts/_checks.md](prompts/_checks.md), the points that work, fix and
 review jobs all check, is included with `{{template "_checks.md" .}}`.
-The prompts in [prompts/](prompts/) are a starting point; a project can
-keep its own.
 
 The worker reads the prompt again for every job, so prompts can change
 while it runs. With `prompts`, they live in a git repository of their own,
-and a change takes effect once it reaches the branch the workers follow:
-before a job, a worker fetches the branch if it last fetched more than
-`refresh` ago, and reads the prompt and its `_*.md` files from that one
-commit, so they always match. If a fetch fails, it goes on with the
-commit it has, and it starts no job until it has fetched one. Its round
+and a change takes effect once it reaches the branch the workers follow.
+Before it claims an item, a worker fetches the branch if it last fetched
+`refresh` ago or more. It takes up the new commit only if every job's
+prompt renders from it, and reads each job's prompt and its `_*.md` files
+from that one commit, so they always match. If a fetch fails, or the new
+commit does not render, the worker goes on with the commit it has, which
+it keeps across restarts; with none yet, it claims nothing. Its round
 comment names the commit, as "with prompts at 1a2b3c4d5e6f", and its log
-says which commit each job's prompt came from. Anyone who can push to that
-branch decides what every agent is told, so protect it as the repository
-itself: the agents' tokens should not reach it.
+says which commit each job's prompt came from.
+
+Anyone who can push to that branch decides what every agent is told. Keep
+the repository out of the agents' reach: leave it out of the brokers'
+`repositories`, or out of the Apps' installations, and let only people push
+to it.
 
 `agent.env` and `reviewer.env` give the job's container what it needs:
 `HIVE_BROKER_URL` and `HIVE_BROKER_TOKEN` for its broker client,

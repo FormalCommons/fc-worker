@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -125,6 +126,10 @@ func runGit(ctx context.Context, dir string, env []string, args ...string) (stri
 		"GIT_COMMITTER_NAME=fc-worker", "GIT_COMMITTER_EMAIL=fc-worker@invalid",
 	)
 	cmd.Env = append(cmd.Env, env...)
+	// Stop git with SIGTERM, on which it removes its lock files; SIGKILL
+	// would leave them, and they would make later commands fail.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

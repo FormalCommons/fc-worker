@@ -60,12 +60,15 @@ func TestPromptRepo(t *testing.T) {
 	src := gitRepo(t, map[string]string{
 		"work.md":          "work {{.Number}}: {{template \"_checks.md\" .}}",
 		"_checks.md":       "v1",
-		"jobs/review.md":   "review {{.Number}}: {{template \"_more.md\" .}}",
+		"jobs/review.md":   "review {{.Number}}: {{template \"_more.md\" .}} {{template \"_\u00e9.md\" .}}",
 		"jobs/_more.md":    "more",
+		"jobs/_\u00e9.md":  "accent",
+		"jobs/_x.md/a.md":  "a directory, not a partial",
 		"jobs/_notes.txt":  "not a partial",
 		"other/_checks.md": "not beside work.md",
 	})
-	p := &promptRepo{url: src, ref: "main", refresh: time.Hour, dir: filepath.Join(t.TempDir(), "prompts.git")}
+	dir := filepath.Join(t.TempDir(), "prompts.git")
+	p := &promptRepo{url: src, ref: "main", refresh: time.Hour, dir: dir, files: []string{"work.md", "jobs/review.md"}}
 	if err := p.init(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +76,7 @@ func TestPromptRepo(t *testing.T) {
 	if got != "work 7: v1" {
 		t.Errorf("work.md rendered %q", got)
 	}
-	if got, _ := render(t, p, "jobs/review.md"); got != "review 7: more" {
+	if got, _ := render(t, p, "jobs/review.md"); got != "review 7: more accent" {
 		t.Errorf("jobs/review.md rendered %q", got)
 	}
 
@@ -88,16 +91,31 @@ func TestPromptRepo(t *testing.T) {
 		t.Errorf("after refresh: %q from %s, want the new commit", got, second)
 	}
 
-	// A failed fetch keeps the commit fetched before.
-	p.url = filepath.Join(t.TempDir(), "missing")
+	// A commit whose prompts do not render is not used.
+	commit(t, src, map[string]string{"jobs/review.md": "review {{template \"_missing.md\" .}}"})
 	if got, c := render(t, p, "work.md"); got != "work 7: v2" || c != second {
-		t.Errorf("after a failed fetch: %q from %s, want the last commit", got, c)
+		t.Errorf("after a broken commit: %q from %s, want the last good commit", got, c)
 	}
 
-	// With no commit fetched yet, a failed fetch is an error.
-	q := &promptRepo{url: p.url, ref: "main", dir: filepath.Join(t.TempDir(), "prompts.git")}
-	q.init(context.Background())
-	if _, err := q.latest(context.Background()); err == nil {
+	// A failed fetch keeps the commit in use.
+	p.url = filepath.Join(t.TempDir(), "missing")
+	if got, c := render(t, p, "work.md"); got != "work 7: v2" || c != second {
+		t.Errorf("after a failed fetch: %q from %s, want the last good commit", got, c)
+	}
+
+	// After a restart, the commit in use is used until a fetch succeeds.
+	q := &promptRepo{url: p.url, ref: "main", dir: dir, files: p.files}
+	if err := q.init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := q.latest(context.Background()); err != nil || c != second {
+		t.Errorf("after a restart: %s, %v; want the last good commit", c, err)
+	}
+
+	// With no commit in use yet, a failed fetch is an error.
+	r := &promptRepo{url: p.url, ref: "main", dir: filepath.Join(t.TempDir(), "prompts.git")}
+	r.init(context.Background())
+	if _, err := r.latest(context.Background()); err == nil {
 		t.Error("no error for a repository that cannot be fetched")
 	}
 

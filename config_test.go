@@ -73,6 +73,8 @@ func TestConfigPrompts(t *testing.T) {
 	for _, tc := range []struct{ old, new, want string }{
 		{`"work.md"`, `"/etc/work.md"`, "path in the prompts repository"},
 		{`"work.md"`, `"../work.md"`, "path in the prompts repository"},
+		{`"work.md"`, `"."`, "path in the prompts repository"},
+		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "ref": "--upload-pack=x"}`, "must not start"},
 		{`"repo": "https://example.com/p.git"`, `"ref": "main"`, "prompts: repo"},
 		{`"https://example.com/p.git"}`, `"https://example.com/p.git", "refresh": "-1m"}`, "refresh"},
 	} {

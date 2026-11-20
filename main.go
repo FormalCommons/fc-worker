@@ -46,6 +46,9 @@ func main() {
 	if p := c.Prompts; p != nil {
 		w.prompts = &promptRepo{url: p.Repo, ref: p.Ref, refresh: p.Refresh.Duration,
 			dir: filepath.Join(*stateDir, c.Name, "prompts.git")}
+		for _, job := range jobNames {
+			w.prompts.files = append(w.prompts.files, c.Jobs[job].Prompt)
+		}
 		if err := w.prompts.init(ctx); err != nil {
 			log.Fatal(err)
 		}
@@ -53,7 +56,9 @@ func main() {
 	// SIGHUP asks the worker to finish its job, if it has one, and exit, so
 	// that its service manager starts it again with a new binary or config.
 	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
+	if !signal.Ignored(syscall.SIGHUP) {
+		signal.Notify(hup, syscall.SIGHUP)
+	}
 	log.Printf("fc-worker %s working on %s", c.Name, c.Repo)
 	for ctx.Err() == nil {
 		// After an error, wait before trying again, so that a failure

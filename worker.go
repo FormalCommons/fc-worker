@@ -66,6 +66,14 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 	}
+	// The prompts come before claiming, so that a worker that has none to
+	// use claims nothing.
+	var prompts string
+	if w.prompts != nil {
+		if prompts, err = w.prompts.latest(ctx); err != nil {
+			return false, err
+		}
+	}
 	// Claims are fetched before the survey. A worker releases its claim
 	// only after its job is done, so any claim released since then shows
 	// its job's work in the survey.
@@ -91,7 +99,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 			log.Printf("%s: not claimed: %v", key, err)
 			continue
 		}
-		err = w.do(ctx, cand)
+		err = w.do(ctx, cand, prompts)
 		// Release even when shutting down, so that others need not wait
 		// for the claim to expire.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
@@ -104,8 +112,9 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// do does one job and logs it.
-func (w *worker) do(ctx context.Context, cand candidate) error {
+// do does one job and logs it. prompts is the commit of the prompts
+// repository to read the job's prompt from, if the config names one.
+func (w *worker) do(ctx context.Context, cand candidate, prompts string) error {
 	log.Printf("%s: %s (%s)", cand.key(), cand.job, cand.why)
 	var err error
 	switch cand.job {
@@ -114,13 +123,13 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 	case autoMerge:
 		err = w.autoMerge(ctx, cand.Item)
 	default:
-		t, version, perr := w.prompt(ctx, cand.job)
+		t, perr := w.prompt(ctx, cand.job, prompts)
 		if perr != nil {
 			err = perr
 			break
 		}
-		if version != "" {
-			log.Printf("%s: %s prompt from %s", cand.key(), cand.job, short(version))
+		if prompts != "" {
+			log.Printf("%s: %s prompt from %s", cand.key(), cand.job, short(prompts))
 		}
 		start := time.Now()
 		var started bool
@@ -129,7 +138,7 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 		// A job whose command started is a round, whether or not it
 		// succeeded.
 		if started && ctx.Err() == nil {
-			err = errors.Join(err, w.record(ctx, cand, version, err))
+			err = errors.Join(err, w.record(ctx, cand, prompts, err))
 		}
 	}
 	if err != nil {
@@ -138,29 +147,21 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 	return nil
 }
 
-// prompt parses the job's prompt, from the prompts repository if the config
-// names one, and otherwise from its file. It returns the commit the prompt
-// came from, or "" for a file.
-func (w *worker) prompt(ctx context.Context, job string) (*template.Template, string, error) {
+// prompt parses the job's prompt: from commit of the prompts repository,
+// if the config names one, and otherwise from its file.
+func (w *worker) prompt(ctx context.Context, job, commit string) (*template.Template, error) {
 	file := w.c.Jobs[job].Prompt
 	if w.prompts == nil {
-		t, err := parsePrompt(file)
-		return t, "", err
+		return parsePrompt(file)
 	}
-	commit, err := w.prompts.latest(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	t, err := w.prompts.parse(ctx, commit, file)
-	return t, commit, err
+	return w.prompts.parse(ctx, commit, file)
 }
 
 // record looks at the item again after a job and comments on it: which job
 // ran, with which prompts, and whether it changed anything or its command
-// failed. These
-// comments count the rounds, and the worker parks the item after
-// idle_rounds rounds in a row that changed nothing, or max_rounds rounds in
-// all. A failed command does not count toward idle_rounds, so that an
+// failed. These comments count the rounds, and the worker parks the item
+// after idle_rounds rounds in a row that changed nothing, or max_rounds
+// rounds in all. A failed command does not count toward idle_rounds, so that an
 // outage, such as of the gateway, does not park item after item.
 func (w *worker) record(ctx context.Context, cand candidate, version string, jobErr error) error {
 	items, err := survey(ctx, w.gh, w.c)

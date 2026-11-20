@@ -204,6 +204,9 @@ func (c *Config) validate() error {
 		if p.Repo == "" {
 			return errors.New("prompts: repo is required")
 		}
+		if strings.HasPrefix(p.Repo, "-") || strings.HasPrefix(p.Ref, "-") {
+			return errors.New("prompts: repo and ref must not start with '-'")
+		}
 		if p.Ref == "" {
 			p.Ref = "main"
 		}
@@ -214,7 +217,7 @@ func (c *Config) validate() error {
 			return errors.New("prompts: refresh must not be negative")
 		}
 		for name, j := range c.Jobs {
-			if !filepath.IsLocal(j.Prompt) {
+			if !filepath.IsLocal(j.Prompt) || filepath.Clean(j.Prompt) == "." {
 				return fmt.Errorf("jobs: %s: prompt must be a path in the prompts repository, such as work.md", name)
 			}
 			j.Prompt = filepath.ToSlash(filepath.Clean(j.Prompt))
