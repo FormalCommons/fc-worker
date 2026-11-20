@@ -127,6 +127,13 @@ func next(it Item, c *Config) (job, why string) {
 // order is the order in which jobs are picked.
 var order = []string{park, autoMerge, "fix", "review", "triage", "work"}
 
+// issueOutside reports whether an issue's author is outside the project.
+// The config's apps count as in it for issues alone: their pull requests and
+// reviews would need jobs that nothing runs for them.
+func issueOutside(author *actor, association string, c *Config) bool {
+	return outside(author, association, c) && !slices.ContainsFunc(c.Apps, author.is)
+}
+
 // outside reports whether an author is outside the project: neither of the
 // two Apps, nor a maintainer in the config, nor the repository's owner, an
 // organization member or a collaborator. A deleted account is outside too.
@@ -244,7 +251,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 		for _, n := range r.Repository.Issues.Nodes {
 			it := Item{
 				ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
-				Outside:      outside(n.Author, n.AuthorAssociation, c),
+				Outside:      issueOutside(n.Author, n.AuthorAssociation, c),
 				OpenBlockers: n.BlockedBy.open(), OpenSubIssues: n.SubIssues.open(),
 				ClosingPRs: closing(n.ClosedBy.Nodes, c, time.Now()),
 			}

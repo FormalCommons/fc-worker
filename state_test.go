@@ -175,3 +175,28 @@ func TestOutside(t *testing.T) {
 		}
 	}
 }
+
+func TestIssueOutside(t *testing.T) {
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Apps: []string{"github-actions[bot]"}}
+	for _, tc := range []struct {
+		author      *actor
+		association string
+		want        bool
+	}{
+		{&actor{"Bot", "github-actions"}, "NONE", false},
+		{&actor{"Bot", "github-actions[bot]"}, "CONTRIBUTOR", false},
+		{&actor{"User", "github-actions"}, "NONE", true}, // a person with a listed App's name
+		{&actor{"Bot", "other-app"}, "NONE", true},
+		{&actor{"User", "mallory"}, "CONTRIBUTOR", true},
+		{&actor{"User", "alice"}, "MEMBER", false},
+		{nil, "NONE", true},
+	} {
+		if got := issueOutside(tc.author, tc.association, c); got != tc.want {
+			t.Errorf("%v %s: issueOutside %v, want %v", tc.author, tc.association, got, tc.want)
+		}
+	}
+	// A listed App's pull requests and reviews stay outside.
+	if !outside(&actor{"Bot", "github-actions"}, "NONE", c) {
+		t.Error("a listed App counts as in the project beyond its issues")
+	}
+}

@@ -98,6 +98,7 @@ func TestConfigErrors(t *testing.T) {
 		{`"name": "w1"`, `"name": "w 1"`, "name"},
 		{`"repo"`, `"repository"`, "unknown field"},
 		{`"name": "w1"`, `"name": "w1", "maintainers": ["fc-agent[bot]"]`, "maintainers"},
+		{`"name": "w1"`, `"name": "w1", "apps": ["github-actions"]`, "apps"},
 	} {
 		_, err := loadConfig(writeConfig(t, strings.Replace(testConfig, tc.old, tc.new, 1)))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
