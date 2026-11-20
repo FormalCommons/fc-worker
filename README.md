@@ -50,7 +50,7 @@ request's reviews and fixes.
 
 Outside the project means anyone but the two Apps, the `maintainers` in the
 config, and the repository's owners, organization members and
-collaborators. The repository is public, so anyone can open an issue or
+collaborators; for issues, also the `apps` in the config. The repository is public, so anyone can open an issue or
 pull request, and agents must not take that as their task. To hand such an item to the agents, a maintainer opens
 an issue of their own.
 
@@ -280,7 +280,7 @@ unset or empty, the worker refuses to start.
 | `name` | This worker, in claims and comments. Give every worker its own name. |
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
-| `apps` | Logins of other GitHub Apps, such as `github-actions[bot]`, whose issues and pull requests count as the project's own, as the agent App's do: for example a scheduled workflow that opens issues for the agents. List only an App that nobody outside the project can make act; a repository's own workflows qualify while the agents cannot change them (the agent App has no Workflows permission). |
+| `apps` | Logins of other GitHub Apps, such as `github-actions[bot]`, whose issues count as the project's own: for example those of a scheduled workflow that opens issues for the agents. Their pull requests and reviews still count as outside. See the security notes before listing one. |
 | `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
 | `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. `ref` can also be a tag or a commit, to hold the prompts still. |
 | `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
@@ -358,6 +358,16 @@ name and email for its commits.
   host, not in a container, and is trusted.
 - The gateway and the broker serve plain HTTP. Keep them on a private
   network.
+- An App listed in `apps` writes the agents' tasks: its issues are worked
+  on like a maintainer's. `github-actions[bot]` acts only through the
+  repository's own workflows, with the permissions each declares, so list
+  it only if no workflow that someone outside the project can start
+  (`issues`, `issue_comment`, `pull_request_target`, `workflow_run`, `fork`,
+  `watch` and the like) can write issues, and if the workflows that do write
+  them put in only what the project controls, such as fixed text and a
+  checked tag name, never text from elsewhere. Agents can make it act
+  through the code that workflows run, but that gives them nothing they
+  cannot do as the agent App.
 
 ## Open points
 

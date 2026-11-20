@@ -152,7 +152,7 @@ func TestClosing(t *testing.T) {
 }
 
 func TestOutside(t *testing.T) {
-	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}, Apps: []string{"github-actions[bot]"}}
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}}
 	for _, tc := range []struct {
 		author      *actor
 		association string
@@ -169,11 +169,34 @@ func TestOutside(t *testing.T) {
 		{nil, "NONE", true},
 		{&actor{"User", "Maint"}, "NONE", false}, // a maintainer whose membership is private
 		{&actor{"Bot", "maint"}, "NONE", true},   // an App with a maintainer's name
-		{&actor{"Bot", "github-actions"}, "NONE", false},
-		{&actor{"User", "github-actions"}, "NONE", true}, // a person with a listed App's name
 	} {
 		if got := outside(tc.author, tc.association, c); got != tc.want {
 			t.Errorf("%v %s: outside %v, want %v", tc.author, tc.association, got, tc.want)
 		}
+	}
+}
+
+func TestIssueOutside(t *testing.T) {
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Apps: []string{"github-actions[bot]"}}
+	for _, tc := range []struct {
+		author      *actor
+		association string
+		want        bool
+	}{
+		{&actor{"Bot", "github-actions"}, "NONE", false},
+		{&actor{"Bot", "github-actions[bot]"}, "CONTRIBUTOR", false},
+		{&actor{"User", "github-actions"}, "NONE", true}, // a person with a listed App's name
+		{&actor{"Bot", "other-app"}, "NONE", true},
+		{&actor{"User", "mallory"}, "CONTRIBUTOR", true},
+		{&actor{"User", "alice"}, "MEMBER", false},
+		{nil, "NONE", true},
+	} {
+		if got := issueOutside(tc.author, tc.association, c); got != tc.want {
+			t.Errorf("%v %s: issueOutside %v, want %v", tc.author, tc.association, got, tc.want)
+		}
+	}
+	// A listed App's pull requests and reviews stay outside.
+	if !outside(&actor{"Bot", "github-actions"}, "NONE", c) {
+		t.Error("a listed App counts as in the project beyond its issues")
 	}
 }

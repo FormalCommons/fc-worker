@@ -34,8 +34,7 @@ type Config struct {
 	// such members here.
 	Maintainers []string `json:"maintainers"`
 	// Apps are the logins of other GitHub Apps, such as
-	// "github-actions[bot]", whose issues and pull requests count as the
-	// project's own, as the agent App's do.
+	// "github-actions[bot]", whose issues count as the project's own.
 	Apps []string `json:"apps"`
 	// Jobs holds how to run each job: "work", "fix", "review" and "triage".
 	Jobs map[string]Job `json:"jobs"`
