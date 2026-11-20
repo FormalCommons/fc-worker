@@ -114,7 +114,8 @@ func next(it Item, c *Config) (job, why string) {
 	// outside the code, such as a failed download in CI. A second removal
 	// leads to a fix. A commit that the fix pushes starts the count again,
 	// even a bare merge of the base branch, onto which GitHub moves the
-	// approval; max_rounds bounds the fix rounds.
+	// approval; max_rounds bounds these rounds, and idle_rounds parks a pull
+	// request whose fixes push nothing.
 	case !it.AutoMerge && !it.Queued && it.Removals == 1:
 		return autoMerge, "removed from the merge queue once since its approval and its latest commit; it goes back in once before a fix"
 	case !it.AutoMerge && !it.Queued:
@@ -320,7 +321,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 					it.Requested = true
 				}
 			}
-			it.Removals = removals(n.TimelineItems.Nodes, it.ReviewedAt, headAt)
+			it.Removals = removals(n.TimelineItems.Nodes, it.ReviewedAt, headAt, time.Now())
 			items = append(items, it)
 		}
 		p := r.Repository.PullRequests.PageInfo
@@ -342,10 +343,12 @@ type removal struct {
 }
 
 // removals counts the removals that were not merges and came after both
-// the reviewer's verdict and the latest commit.
-func removals(removed []removal, verdict, head time.Time) int {
+// the reviewer's verdict and the latest commit. A commit dated after now,
+// by a wrong clock, does not count, since it would hide every removal and
+// so re-queue the pull request without end.
+func removals(removed []removal, verdict, head, now time.Time) int {
 	since := verdict
-	if head.After(since) {
+	if head.After(since) && !head.After(now) {
 		since = head
 	}
 	n := 0

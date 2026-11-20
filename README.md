@@ -343,3 +343,8 @@ name and email for its commits.
   workflows changed since the pull request began.
 - Whether the Apps can still comment and review while the repository's
   interactions are limited to collaborators.
+- Whether GitHub still counts the reviewer's approval, under "require
+  approval of the most recent push", after a fix job pushes a bare merge
+  of the base branch. GitHub has kept such approvals so far; if it stops,
+  the worker parks the pull request as "approval does not count" instead
+  of putting it back in the merge queue.

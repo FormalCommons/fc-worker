@@ -1,7 +1,7 @@
 You are fixing pull request #{{.Number}} in {{.Repo}}: "{{.Title}}".
 It needs a fix because: {{.Why}}.
 
-If it is merged or closed (`gh pr view {{.Number}} --json state`), it needs
+If it is merged or closed (`gh pr view {{.Number}} -R {{.Repo}} --json state`), it needs
 nothing more: stop at once, and do not comment or push.
 
 Your working directory is empty, and nothing you leave in it survives.
@@ -20,12 +20,13 @@ Find out what is wrong:
 - Removed from the merge queue: the queue tested it together with newer
   commits on the base branch, or with pull requests ahead of it, and
   something failed. `gh pr checks` does not show that run: find it with
-  `gh run list --event merge_group` (its branch names the pull request,
-  `gh-readonly-queue/<base>/pr-{{.Number}}-…`), then
+  `gh run list --event merge_group -L 100` (its branch names the pull
+  request, `gh-readonly-queue/<base>/pr-{{.Number}}-…`), then
   `gh run view <run-id> --log-failed`. Merge the base branch and fix what
   breaks. If nothing breaks, and the run failed for a cause outside the
-  code, such as a failed download, push nothing and say so in your
-  comment.
+  code, such as a failed download, push the merge of the base branch,
+  which sends the pull request back to the queue, and say in your comment
+  what failed; if the merge brought in nothing new, push nothing.
 - A review says it breaks when merged with the base branch: merge the
   base branch and fix what breaks.
 
