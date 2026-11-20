@@ -64,8 +64,9 @@ an issue of their own.
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
 
 Each job is one fresh agent in a fresh container, started with the job's
-prompt. The prompts are in [prompts/](prompts/); a repository can use its
-own. Fix only runs on pull requests that the agent App opened. Other pull
+prompt. Example prompts are in [prompts/](prompts/); a project can use its
+own, also from a repository of their own that the workers follow during a
+run (see [Configuration](#configuration)). Fix only runs on pull requests that the agent App opened. Other pull
 requests get reviews, and their authors fix them. Agents open pull requests
 ready for review, never as drafts.
 
@@ -215,7 +216,7 @@ fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-lis
 | Flag | Meaning |
 |---|---|
 | `-config` | The config file. |
-| `-state` | A directory for the worker's own files: a bare git repository per worker, which holds its claim commits. |
+| `-state` | A directory for the worker's own files: bare git repositories per worker, which hold its claim commits and the prompts it fetched. |
 | `-list` | Print every open issue and pull request with its next job and who holds its claim, and GitHub's rate limits, then exit. |
 
 The worker logs a line when a job starts and when it ends. A job's
@@ -226,6 +227,12 @@ passes it through. The worker never deletes these files. A job's standard
 error always goes to the worker's. SIGTERM or SIGINT stops the worker: a
 running job gets SIGTERM, and the worker releases its claim before it
 exits.
+
+SIGHUP asks the worker to exit once its job, if it has one, is done and
+its claim released; an idle worker exits at once. Its service manager then
+starts it again, so a new binary or config takes over without stopping any
+job: under systemd, install the new files, then
+`systemctl kill --signal=SIGHUP 'fc-worker@*'` with `Restart=always`.
 
 ### Configuration
 
@@ -269,7 +276,8 @@ unset or empty, the worker refuses to start.
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
 | `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
-| `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
+| `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. |
+| `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
@@ -279,12 +287,24 @@ unset or empty, the worker refuses to start.
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
 (`issue` or `pull request`), `{{.Number}}`, `{{.Title}}` and `{{.Why}}`, why
-the item needs the job, such as "checks failed". The worker reads the
-prompt again for every job, so it can change while the worker runs. Files
-named `_*.md` beside a prompt are read with it, so prompts can share
-text: [prompts/_checks.md](prompts/_checks.md), the points that
-work, fix and review jobs all check, is included with
-`{{template "_checks.md" .}}`.
+the item needs the job, such as "checks failed". Files named `_*.md`
+beside a prompt are read with it, so prompts can share text:
+[prompts/_checks.md](prompts/_checks.md), the points that work, fix and
+review jobs all check, is included with `{{template "_checks.md" .}}`.
+The prompts in [prompts/](prompts/) are a starting point; a project can
+keep its own.
+
+The worker reads the prompt again for every job, so prompts can change
+while it runs. With `prompts`, they live in a git repository of their own,
+and a change takes effect once it reaches the branch the workers follow:
+before a job, a worker fetches the branch if it last fetched more than
+`refresh` ago, and reads the prompt and its `_*.md` files from that one
+commit, so they always match. If a fetch fails, it goes on with the
+commit it has, and it starts no job until it has fetched one. Its round
+comment names the commit, as "with prompts at 1a2b3c4d5e6f", and its log
+says which commit each job's prompt came from. Anyone who can push to that
+branch decides what every agent is told, so protect it as the repository
+itself: the agents' tokens should not reach it.
 
 `agent.env` and `reviewer.env` give the job's container what it needs:
 `HIVE_BROKER_URL` and `HIVE_BROKER_TOKEN` for its broker client,

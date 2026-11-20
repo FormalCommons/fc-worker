@@ -9,13 +9,15 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"text/template"
 	"time"
 )
 
 type worker struct {
-	c      *Config
-	gh     *github
-	claims *claims
+	c       *Config
+	gh      *github
+	claims  *claims
+	prompts *promptRepo // nil if the prompts are files
 }
 
 // candidate is an item that needs a job now.
@@ -112,14 +114,22 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 	case autoMerge:
 		err = w.autoMerge(ctx, cand.Item)
 	default:
+		t, version, perr := w.prompt(ctx, cand.job)
+		if perr != nil {
+			err = perr
+			break
+		}
+		if version != "" {
+			log.Printf("%s: %s prompt from %s", cand.key(), cand.job, short(version))
+		}
 		start := time.Now()
 		var started bool
-		started, err = runJob(ctx, w.c, cand.job, cand.Item, cand.why)
+		started, err = runJob(ctx, w.c, cand.job, t, cand.Item, cand.why)
 		log.Printf("%s: %s ended after %s", cand.key(), cand.job, time.Since(start).Round(time.Second))
 		// A job whose command started is a round, whether or not it
 		// succeeded.
 		if started && ctx.Err() == nil {
-			err = errors.Join(err, w.record(ctx, cand, err))
+			err = errors.Join(err, w.record(ctx, cand, version, err))
 		}
 	}
 	if err != nil {
@@ -128,13 +138,31 @@ func (w *worker) do(ctx context.Context, cand candidate) error {
 	return nil
 }
 
+// prompt parses the job's prompt, from the prompts repository if the config
+// names one, and otherwise from its file. It returns the commit the prompt
+// came from, or "" for a file.
+func (w *worker) prompt(ctx context.Context, job string) (*template.Template, string, error) {
+	file := w.c.Jobs[job].Prompt
+	if w.prompts == nil {
+		t, err := parsePrompt(file)
+		return t, "", err
+	}
+	commit, err := w.prompts.latest(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	t, err := w.prompts.parse(ctx, commit, file)
+	return t, commit, err
+}
+
 // record looks at the item again after a job and comments on it: which job
-// ran, and whether it changed anything or its command failed. These
+// ran, with which prompts, and whether it changed anything or its command
+// failed. These
 // comments count the rounds, and the worker parks the item after
 // idle_rounds rounds in a row that changed nothing, or max_rounds rounds in
 // all. A failed command does not count toward idle_rounds, so that an
 // outage, such as of the gateway, does not park item after item.
-func (w *worker) record(ctx context.Context, cand candidate, jobErr error) error {
+func (w *worker) record(ctx context.Context, cand candidate, version string, jobErr error) error {
 	items, err := survey(ctx, w.gh, w.c)
 	if err != nil {
 		return err
@@ -158,8 +186,12 @@ func (w *worker) record(ctx context.Context, cand candidate, jobErr error) error
 	default:
 		idle = 0
 	}
-	msg := fmt.Sprintf("%s\nfc-worker %s ran a %s round (%s). %s Round %d of at most %d.",
-		marker, w.c.Name, cand.job, cand.why, result, rounds, w.c.MaxRounds)
+	with := ""
+	if version != "" {
+		with = " with prompts at " + short(version)
+	}
+	msg := fmt.Sprintf("%s\nfc-worker %s ran a %s round (%s)%s. %s Round %d of at most %d.",
+		marker, w.c.Name, cand.job, cand.why, with, result, rounds, w.c.MaxRounds)
 	if err := w.comment(ctx, cand.Number, msg); err != nil {
 		return err
 	}
