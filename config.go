@@ -33,6 +33,10 @@ type Config struct {
 	// see a private organization member as outside the project, so list
 	// such members here.
 	Maintainers []string `json:"maintainers"`
+	// Apps are the logins of other GitHub Apps, such as
+	// "github-actions[bot]", whose issues and pull requests count as the
+	// project's own, as the agent App's do.
+	Apps []string `json:"apps"`
 	// Jobs holds how to run each job: "work", "fix", "review" and "triage".
 	Jobs map[string]Job `json:"jobs"`
 	// Prompts, if set, is a git repository that holds the prompts. Each
@@ -145,6 +149,9 @@ func (c *Config) expandEnv() error {
 	for i := range c.Maintainers {
 		expand(&c.Maintainers[i])
 	}
+	for i := range c.Apps {
+		expand(&c.Apps[i])
+	}
 	if c.Prompts != nil {
 		expand(&c.Prompts.Repo)
 		expand(&c.Prompts.Ref)
@@ -182,6 +189,11 @@ func (c *Config) validate() error {
 	for _, m := range c.Maintainers {
 		if !login.MatchString(m) {
 			return fmt.Errorf("maintainers: %q is not a person's login", m)
+		}
+	}
+	for _, a := range c.Apps {
+		if !appLogin.MatchString(a) {
+			return fmt.Errorf(`apps: %q is not an App's login, such as "github-actions[bot]"`, a)
 		}
 	}
 	for name, j := range c.Jobs {
@@ -246,4 +258,5 @@ var (
 	repoName   = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 	workerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	login      = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+	appLogin   = regexp.MustCompile(`^[A-Za-z0-9-]+\[bot\]$`)
 )

@@ -134,7 +134,7 @@ func outside(author *actor, association string, c *Config) bool {
 	if author == nil {
 		return true
 	}
-	if author.is(c.Agent) || author.is(c.Reviewer) {
+	if author.is(c.Agent) || author.is(c.Reviewer) || slices.ContainsFunc(c.Apps, author.is) {
 		return false
 	}
 	if author.Typename == "User" && slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, author.Login) }) {
