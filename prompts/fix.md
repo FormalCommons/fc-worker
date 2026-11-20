@@ -27,6 +27,12 @@ you disagree with a review comment, do not change the code for it; answer
 it and say why. If part of the fix belongs in a separate change, create an
 issue for it with `gh issue create --label proposed`.
 
+Before you push, review the whole pull request, not only your fix, as its
+reviewer will: read its changes (`git diff origin/main...`) and check each
+of these, fixing what falls short.
+
+{{template "_checks.md" .}}
+
 Finish with a short comment on the pull request that says what you
 changed and answers the review.
 

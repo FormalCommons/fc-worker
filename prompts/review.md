@@ -10,20 +10,13 @@ Read the pull request and its discussion (`gh pr view {{.Number}} --comments`,
 or is part of, and its changes (`gh pr diff {{.Number}}`). Build and test it
 as `AGENTS.md` says, including any checks it asks of reviewers.
 
-Review its latest commit. Ask:
+Review its latest commit. Check each of these:
 
-- Does it do what the issue asks, and nothing unrelated?
-- Is it correct?
-- Does it follow `AGENTS.md`?
-- Is it as simple and clear as it can be?
-- Does it answer earlier reviews?
+{{template "_checks.md" .}}
 
-Before you approve, check that it still works with the latest base branch,
-which may have moved since the pull request began, or while you reviewed:
-`git fetch origin`, merge the base branch into your checkout
-(`git merge origin/main`, or whichever branch the pull request targets),
-and build and test again. Do not push the merge. If it conflicts, or the
-merged code fails, request changes and say what breaks.
+Check the base branch last, just before you submit, since it may also move
+while you review. Do not push the merge. If it conflicts, or the merged
+code fails, request changes and say what breaks.
 
 Before you submit your review, decide what to do with each suggestion you
 have. Nobody acts on a suggestion in an approved review, so:

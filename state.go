@@ -34,7 +34,7 @@ type Item struct {
 	Decision     string    // GitHub's sum of the reviews that count: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" if none are required
 	AutoMerge    bool
 	Queued       bool
-	RemovedAt    time.Time // when it last left the merge queue without merging
+	Removals     int // times it left the merge queue without merging since the reviewer's latest verdict, counting at most 2
 }
 
 // Next jobs that the worker does by itself, without an agent.
@@ -81,8 +81,8 @@ func next(it Item, c *Config) (job, why string) {
 		fix = "the reviewer requested changes"
 	case it.Requested:
 		fix = "a person requested changes"
-	case it.Review == "APPROVED" && it.RemovedAt.After(it.ReviewedAt):
-		fix = "removed from the merge queue"
+	case it.Review == "APPROVED" && it.Removals > 1 && !it.Queued && !it.AutoMerge:
+		fix = "removed from the merge queue twice since its approval"
 	}
 	switch {
 	case fix != "" && !it.Ours:
@@ -109,6 +109,13 @@ func next(it Item, c *Config) (job, why string) {
 		return park, "approved by the reviewer, but a person's request for changes stands"
 	case it.Decision == "REVIEW_REQUIRED":
 		return park, "approved by the reviewer, but GitHub still requires a review: the reviewer's approval does not count, or more are required"
+	// Removed from the merge queue once since the approval: put it back once
+	// before a fix job, since the cause may be outside the code, such as a
+	// failed download in CI. A merge of the base branch does not count as a
+	// new commit here, as GitHub moves an approval onto it, so only a second
+	// removal leads to a fix.
+	case !it.AutoMerge && !it.Queued && it.Removals == 1:
+		return autoMerge, "removed from the merge queue once since its approval; it goes back in once before a fix"
 	case !it.AutoMerge && !it.Queued:
 		return autoMerge, "approved"
 	}
@@ -161,7 +168,7 @@ const pullsQuery = `query($owner: String!, $name: String!, $after: String) {
         autoMergeRequest { enabledAt }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         reviews(last: 100) { nodes { author { __typename login } authorAssociation state submittedAt commit { oid } } }
-        timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        timelineItems(last: 2, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
           nodes { ... on RemovedFromMergeQueueEvent { createdAt } }
         }
       }
@@ -301,9 +308,6 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 			if c := n.Commits.Nodes; len(c) > 0 && c[0].Commit.StatusCheckRollup != nil {
 				it.Checks = c[0].Commit.StatusCheckRollup.State
 			}
-			if t := n.TimelineItems.Nodes; len(t) > 0 {
-				it.RemovedAt = t[0].CreatedAt
-			}
 			for _, r := range verdicts(n.Reviews.Nodes, it.Head) {
 				switch {
 				case r.Author.is(c.Reviewer):
@@ -312,6 +316,11 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 					it.Requested = true
 				}
 			}
+			var removed []time.Time
+			for _, t := range n.TimelineItems.Nodes {
+				removed = append(removed, t.CreatedAt)
+			}
+			it.Removals = removals(removed, it.ReviewedAt)
 			items = append(items, it)
 		}
 		p := r.Repository.PullRequests.PageInfo
@@ -322,6 +331,18 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 	}
 	slices.SortFunc(items, func(a, b Item) int { return a.Number - b.Number })
 	return items, nil
+}
+
+// removals counts the times in removed, when a pull request left the merge
+// queue without merging, that come after since, the reviewer's verdict.
+func removals(removed []time.Time, since time.Time) int {
+	n := 0
+	for _, t := range removed {
+		if t.After(since) {
+			n++
+		}
+	}
+	return n
 }
 
 // closingPR is a pull request that closes an issue when it merges.

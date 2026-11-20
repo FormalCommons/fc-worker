@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"text/template"
 	"time"
 )
 
@@ -117,7 +116,7 @@ func TestProgress(t *testing.T) {
 // TestPrompts renders the prompts in prompts/, to catch mistakes in them.
 func TestPrompts(t *testing.T) {
 	for _, job := range jobNames {
-		tmpl, err := template.ParseFiles(filepath.Join("prompts", job+".md"))
+		tmpl, err := parsePrompt(filepath.Join("prompts", job+".md"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -127,6 +126,9 @@ func TestPrompts(t *testing.T) {
 		}
 		if !strings.Contains(b.String(), "#7") {
 			t.Errorf("%s: the prompt does not name the item", job)
+		}
+		if job != "triage" && !strings.Contains(b.String(), "It still works with the latest base branch") {
+			t.Errorf("%s: the prompt does not include _checks.md", job)
 		}
 	}
 }

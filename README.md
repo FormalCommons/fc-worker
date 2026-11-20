@@ -36,11 +36,11 @@ pull request from GitHub. The first row that matches decides:
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
 | Issue that an open pull request from the project will close, or that a pull request merged less than five minutes ago will close (GitHub closes it seconds after the merge) | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
-| Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
+| Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue twice since its approval | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
-| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it |
+| Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it. After a first removal from the merge queue it turns auto-merge on again, once, since the cause may be outside the code, such as a failed download in CI |
 
 Every state either has a job or waits for something that has one, so
 nothing is left behind. Limits send an item to `needs-human` rather than
@@ -280,7 +280,11 @@ A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
 (`issue` or `pull request`), `{{.Number}}`, `{{.Title}}` and `{{.Why}}`, why
 the item needs the job, such as "checks failed". The worker reads the
-prompt again for every job, so it can change while the worker runs.
+prompt again for every job, so it can change while the worker runs. Files
+beside a prompt whose names start with `_` are read with it, so prompts
+can share text: [prompts/_checks.md](prompts/_checks.md), the points that
+work, fix and review jobs all check, is included with
+`{{template "_checks.md" .}}`.
 
 `agent.env` and `reviewer.env` give the job's container what it needs:
 `HIVE_BROKER_URL` and `HIVE_BROKER_TOKEN` for its broker client,

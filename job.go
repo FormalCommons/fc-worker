@@ -25,6 +25,21 @@ type prompt struct {
 	Why    string // why the item needs this job, such as "checks failed"
 }
 
+// parsePrompt parses the prompt at path, together with the files beside it
+// whose names start with "_", which any prompt can include with
+// {{template "_name.md" .}}.
+func parsePrompt(path string) (*template.Template, error) {
+	t, err := template.ParseFiles(path)
+	if err != nil {
+		return nil, err
+	}
+	parts, err := filepath.Glob(filepath.Join(filepath.Dir(path), "_*.md"))
+	if err != nil || len(parts) == 0 {
+		return t, err
+	}
+	return t.ParseFiles(parts...)
+}
+
 // runJob renders the job's prompt into a file and runs the job's command
 // with it. The prompt is read again for every job, so it can be changed
 // while the worker runs. When the timeout passes or ctx ends, the command
@@ -33,7 +48,7 @@ type prompt struct {
 // reports whether the command started, and how it ended.
 func runJob(ctx context.Context, c *Config, job string, it Item, why string) (started bool, err error) {
 	j := c.Jobs[job]
-	t, err := template.ParseFiles(j.Prompt)
+	t, err := parsePrompt(j.Prompt)
 	if err != nil {
 		return false, err
 	}
