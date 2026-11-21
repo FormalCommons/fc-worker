@@ -142,7 +142,10 @@ the ref. Each lease commit's parent is the one it replaces, so a claim
 never returns to a state that another worker saw before, and a worker can
 only take a claim if nobody has taken and released it since it looked.
 The claim's history is the item's history of jobs. Whatever a released
-claim's job did is already in the survey that follows.
+claim's job did is already in the survey that follows. GitHub now and then
+fails a push, so a failed release is tried again for up to a minute, while
+the claim is still the worker's; a claim left unreleased would hold its
+item until the lease expired.
 
 ## Labels
 

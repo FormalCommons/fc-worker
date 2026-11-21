@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,8 @@ import (
 // testClaims returns two workers' claims on one local bare repository,
 // which stands in for GitHub.
 func testClaims(t *testing.T) (a, b *claims) {
+	t.Cleanup(func(w time.Duration) func() { return func() { releaseWait = w } }(releaseWait))
+	releaseWait = time.Millisecond
 	dir := t.TempDir()
 	remote := filepath.Join(dir, "remote.git")
 	if out, err := exec.Command("git", "init", "--quiet", "--bare", remote).CombinedOutput(); err != nil {
@@ -84,5 +87,54 @@ func TestTakeExpired(t *testing.T) {
 	}
 	if held, _ := a.fetch(ctx); held["pr-2"].Commit != commit {
 		t.Errorf("claim is %+v, want b's %s", held["pr-2"], commit)
+	}
+}
+
+func TestReleaseRetries(t *testing.T) {
+	ctx := context.Background()
+	a, b := testClaims(t)
+	commit, err := a.take(ctx, "issue-3", "work", time.Hour, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The remote refuses the next push, as GitHub now and then does.
+	remote := a.url
+	hook := "#!/bin/sh\nif [ -e fail-next ]; then rm fail-next; exit 1; fi\n"
+	if err := os.WriteFile(filepath.Join(remote, "hooks", "pre-receive"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "fail-next"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.release(ctx, "issue-3", "work", commit); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "fail-next")); err == nil {
+		t.Fatal("the remote refused no push")
+	}
+	held, _ := b.fetch(ctx)
+	if h := held["issue-3"]; h.Commit == commit || time.Now().Before(h.Lease.Expires) {
+		t.Errorf("after release: %+v, want an expired lease", h)
+	}
+}
+
+func TestReleaseLanded(t *testing.T) {
+	ctx := context.Background()
+	a, _ := testClaims(t)
+	commit, err := a.take(ctx, "pr-4", "review", time.Hour, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A release that GitHub made but whose push reported a failure: the
+	// claim is a's expired lease, whose parent is the claim a took.
+	landed, err := a.take(ctx, "pr-4", "review", 0, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.release(ctx, "pr-4", "review", commit); err != nil {
+		t.Errorf("release after it landed: %v", err)
+	}
+	if held, _ := a.fetch(ctx); held["pr-4"].Commit != landed {
+		t.Errorf("claim is %+v, want the landed release %s", held["pr-4"], landed)
 	}
 }
