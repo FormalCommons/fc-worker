@@ -84,12 +84,49 @@ func (c *claims) take(ctx context.Context, key, job string, ttl time.Duration, o
 	return commit, err
 }
 
+// releaseWait is how long a failed release first waits before it tries
+// again; each later wait is twice as long.
+var releaseWait = 5 * time.Second
+
 // release ends a claim, if it is still the one this worker took, by
 // replacing it with a lease that has expired. Deleting the ref instead would
 // let a worker that saw no claim before this one was taken take it now.
+//
+// GitHub now and then fails a push, and a claim that is not released holds
+// its item until the lease expires. So a failed release tries again until
+// ctx ends, while the claim is still the one this worker took. A release
+// that GitHub made, though the push reported a failure, counts as done.
 func (c *claims) release(ctx context.Context, key, job, commit string) error {
 	_, err := c.take(ctx, key, job, 0, commit)
-	return err
+	for wait := releaseWait; err != nil; wait *= 2 {
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(wait):
+		}
+		held, ferr := c.fetch(ctx)
+		if ferr != nil {
+			continue
+		}
+		if h := held[key]; h.Commit != commit {
+			if c.released(ctx, h, job, commit) {
+				return nil
+			}
+			return fmt.Errorf("the claim has changed: %w", err)
+		}
+		_, err = c.take(ctx, key, job, 0, commit)
+	}
+	return nil
+}
+
+// released reports whether h, a claim as fetched, is this worker's release
+// of the claim commit.
+func (c *claims) released(ctx context.Context, h claim, job, commit string) bool {
+	if h.Commit == "" || h.Lease.Worker != c.name || h.Lease.Job != job || time.Now().Before(h.Lease.Expires) {
+		return false
+	}
+	parent, err := c.git(ctx, "rev-parse", "--verify", "--quiet", h.Commit+"^")
+	return err == nil && strings.TrimSpace(parent) == commit
 }
 
 // init creates the local bare repository, if it does not exist yet.

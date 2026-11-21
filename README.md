@@ -144,6 +144,10 @@ only take a claim if nobody has taken and released it since it looked.
 The claim's history is the item's history of jobs. Whatever a released
 claim's job did is already in the survey that follows.
 
+GitHub now and then fails a push, and a claim left unreleased would hold
+its item until the lease expired. So a failed release is tried again for
+up to a minute, while the claim is still the worker's.
+
 ## Labels
 
 | Label | Meaning |
