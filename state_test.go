@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -31,7 +33,10 @@ func TestNext(t *testing.T) {
 		{"outside issue", Item{Outside: true}, ""},
 		{"outside PR", Item{PR: true, Outside: true, Checks: "SUCCESS"}, ""},
 
-		{"draft", Item{PR: true, Draft: true, Ours: true, Conflict: true}, ""},
+		{"draft", Item{PR: true, Draft: true, Ours: true, Conflict: true, Review: "CHANGES_REQUESTED"}, "continue"},
+		{"parked draft", Item{PR: true, Draft: true, Ours: true, Labels: []string{"needs-human"}}, ""},
+		{"a person's draft", Item{PR: true, Draft: true, Checks: "SUCCESS"}, ""},
+		{"outside draft", Item{PR: true, Draft: true, Outside: true, Checks: "SUCCESS"}, ""},
 		{"parked PR", ours(Item{Labels: []string{"needs-human"}, Conflict: true}), ""},
 		{"conflict", ours(Item{Conflict: true}), "fix"},
 		{"checks failed", ours(Item{Checks: "FAILURE"}), "fix"},
@@ -70,6 +75,28 @@ func TestNext(t *testing.T) {
 		if got, why := next(tc.it, c); got != tc.want {
 			t.Errorf("%s: got %q (%s), want %q", tc.name, got, why, tc.want)
 		}
+	}
+}
+
+// TestCandidates checks the order of jobs: unfinished pull requests come
+// before new work.
+func TestCandidates(t *testing.T) {
+	c := &Config{}
+	items := []Item{
+		{Number: 1},
+		{Number: 2, Labels: []string{"proposed"}},
+		{Number: 3, PR: true, Ours: true, Draft: true},
+		{Number: 4, PR: true, Ours: true, Checks: "SUCCESS"},
+		{Number: 5, PR: true, Ours: true, Conflict: true},
+		{Number: 6, PR: true, Ours: true, Draft: true},
+	}
+	var got []string
+	for _, cand := range candidates(items, c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
+	want := []string{"fix 5", "review 4", "continue 3", "continue 6", "triage 2", "work 1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates %v, want %v", got, want)
 	}
 }
 

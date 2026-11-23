@@ -22,6 +22,9 @@ short-lived GitHub tokens from hive-broker.
  issue ──work──► pull request ──review──► approved ──► merge queue ──► merged, issue closed
    │                  ▲   │
    │                  └fix┘  (changes requested, checks failed, conflict)
+   ├──work──► draft pull request ──continue──► pull request  (work too long for one job)
+   │                  ▲      │
+   │                  └──────┘
    └──work──► new issues (proposed) ──triage──► ready, or closed
 ```
 
@@ -30,7 +33,8 @@ pull request from GitHub. The first row that matches decides:
 
 | Item | State | Next |
 |---|---|---|
-| Anything labelled `needs-human`, and draft pull requests | parked | nothing; a person decides |
+| Anything labelled `needs-human` | parked | nothing; a person decides |
+| Draft pull request | unfinished | a **continue** job if the agent App opened it; otherwise nothing, until its author marks it ready |
 | Anything opened by someone outside the project | outside | nothing; a maintainer decides |
 | Issue labelled `proposed` or `close-proposed` | needs triage | a **triage** job |
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
@@ -58,7 +62,8 @@ an issue of their own.
 
 | Job | For | Runs as | The agent |
 |---|---|---|---|
-| work | a ready issue | the agent App | makes progress on the issue in one of three ways: opens a pull request that closes it; splits it into new issues, labelled `proposed`, as its sub-issues or blockers; or, if it needs no change, labels it `close-proposed` and says why. |
+| work | a ready issue | the agent App | makes progress on the issue in one of three ways: opens a pull request that closes it; splits it into new issues, labelled `proposed`, as its sub-issues or blockers; or, if it needs no change, labels it `close-proposed` and says why. If the work is too long for one job, it opens the pull request as a draft, with notes on what is done and what remains. |
+| continue | a draft pull request that the agent App opened | the agent App | goes on from the branch and the notes, and pushes. When the work is finished it marks the pull request ready for review; otherwise it brings the notes up to date for the next job. |
 | fix | a pull request that needs fixing | the agent App | pushes commits to the pull request's branch that address the reviews, failing checks or conflict. |
 | review | a pull request that needs review | the reviewer App | reviews the latest commit, merged with the latest base branch, and approves or requests changes. Work it finds that belongs in another pull request becomes a new issue, labelled `proposed`. |
 | triage | an issue labelled `proposed` or `close-proposed` | the agent App | for `proposed`: removes the label, after editing the issue if needed, or closes it as not planned or a duplicate. For `close-proposed`: closes the issue, or removes the label and says why it still needs work. |
@@ -68,7 +73,21 @@ prompt. Example prompts are in [prompts/](prompts/). A project can use its
 own, as files or from a git repository that the workers follow during a run
 (see [Configuration](#configuration)). Fix only runs on pull requests that
 the agent App opened. Other pull requests get reviews, and their authors fix
-them. Agents open pull requests ready for review, never as drafts.
+them.
+
+A job ends when its work is done or its time is up, and nothing but what
+it pushed to GitHub outlives it. Work that must be one pull request and
+takes longer than one job, such as moving to a new version of a
+dependency, therefore takes several: the work job pushes as it goes and
+opens the pull request as a draft, and continue jobs take it up, each with
+a fresh agent, until one marks it ready. Until then it gets no review and
+no fix, whatever its checks say. Each prompt can tell its agent when the
+job will be stopped (`{{.Deadline}}`). `max_rounds` and `idle_rounds`
+bound these rounds like any others: a continue job that ends by itself
+without a new commit changed nothing. One that is stopped at its deadline
+is a failed command, which does not count toward `idle_rounds`, so only
+`max_rounds` bounds a draft whose jobs keep running out of time. To hold
+a draft of the agent App back from the workers, label it `needs-human`.
 
 ## The worker
 
@@ -77,7 +96,7 @@ Each worker runs one job at a time:
 1. **Survey.** Read the claims with git, then the open issues and pull
    requests with GraphQL.
 2. **Pick.** Choose the first unclaimed job, in this order: fix, review,
-   triage, work. Within each, oldest first.
+   continue, triage, work. Within each, oldest first.
 3. **Claim** the item (see [Claims](#claims)). If another worker was faster,
    pick again.
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
@@ -263,6 +282,7 @@ unset or empty, the worker refuses to start.
     "work": {
       "prompt": "/etc/fc-worker/prompts/work.md",
       "timeout": "90m",
+      "limit": "85m",
       "command": ["podman", "run", "--rm", "--network", "fc",
                   "--userns", "keep-id:uid=1000,gid=1000",
                   "--env-file", "/etc/fc-worker/agent.env",
@@ -271,6 +291,7 @@ unset or empty, the worker refuses to start.
                   "-cli", "claude", "-session", "fresh", "-once", "-timeout", "85m",
                   "-prompt-file", "/prompt.md", "--", "--dangerously-skip-permissions"]
     },
+    "continue": { "…": "the same, with prompts/continue.md" },
     "fix": { "…": "the same, with prompts/fix.md" },
     "review": { "…": "the same, with prompts/review.md and reviewer.env" },
     "triage": { "…": "the same, with prompts/triage.md" }
@@ -287,7 +308,7 @@ unset or empty, the worker refuses to start.
 | `apps` | Logins of other GitHub Apps, such as `github-actions[bot]`, whose issues count as the project's own: for example those of a scheduled workflow that opens issues for the agents. Their pull requests and reviews still count as outside. See the security notes before listing one. |
 | `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
 | `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. `ref` can also be a tag or a commit, to hold the prompts still. |
-| `jobs` | For each of `work`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; and `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later. |
+| `jobs` | For each of `work`, `continue`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later; and optionally `limit`, at most `timeout`, if the command stops its agent sooner by itself, as hive-agent's `-timeout` does. The prompt's `{{.Deadline}}` is the job's start plus `limit`, or plus `timeout` without it. |
 | `idle_rounds` | How many rounds in a row that change nothing park an item. Default 3. |
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
@@ -296,11 +317,12 @@ unset or empty, the worker refuses to start.
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
-(`issue` or `pull request`), `{{.Number}}`, `{{.Title}}` and `{{.Why}}`, why
-the item needs the job, such as "checks failed". Files named `_*.md`
+(`issue` or `pull request`), `{{.Number}}`, `{{.Title}}`, `{{.Why}}`, why
+the item needs the job, such as "checks failed", and `{{.Deadline}}`, when
+the job will be stopped, such as "2026-11-23 20:29 UTC". Files named `_*.md`
 beside a prompt are read with it, so prompts can share text:
-[prompts/_checks.md](prompts/_checks.md), the points that work, fix and
-review jobs all check, is included with `{{template "_checks.md" .}}`.
+[prompts/_checks.md](prompts/_checks.md), the points that work, continue,
+fix and review jobs all check, is included with `{{template "_checks.md" .}}`.
 
 The worker reads the prompt again for every job, so prompts can change
 while it runs. With `prompts`, they live in a git repository of their own,
@@ -382,8 +404,8 @@ name and email for its commits.
 - Issues that block each other, or are each other's sub-issues, wait
   forever. Nothing detects such a cycle yet.
 - Without the Workflows permission, the agent App cannot push commits that
-  change workflow files. So a fix job cannot merge in a base branch whose
-  workflows changed since the pull request began.
+  change workflow files. So a fix or continue job cannot merge in a base
+  branch whose workflows changed since the pull request began.
 - Whether the Apps can still comment and review while the repository's
   interactions are limited to collaborators.
 - Whether GitHub still counts the reviewer's approval, under "require

@@ -25,11 +25,16 @@ repeat work that is done or under way.
 
 Then make progress on the issue in one of these ways:
 
-- **Do it.** Work on a branch named `fc/issue-{{.Number}}`. Make sure the
-  work builds and passes the checks that `AGENTS.md` describes, commit,
-  check it against the points below, push, and open a pull request with
-  `gh pr create`, ready for review, not as a draft. Its description says
-  what it does and why, and ends with `Closes #{{.Number}}`.
+- **Do it.** Work on a branch named `fc/issue-{{.Number}}`. If GitHub has
+  that branch already, with no pull request
+  (`git ls-remote --heads origin fc/issue-{{.Number}}`,
+  `gh pr list --state all --head fc/issue-{{.Number}}`), an earlier job was
+  stopped before it opened one: check the branch out and go on from its
+  commits. Make sure the work builds and passes the checks that `AGENTS.md`
+  describes, commit, check it against the points below, push, and open a
+  pull request with `gh pr create`, ready for review. Its description says
+  what it does and why, and ends with `Closes #{{.Number}}`. If the work
+  takes longer than this job has, see **Out of time** below.
 - **Split it.** If the issue is too big for one pull request, or needs other
   work first, create an issue for each part, labelled `proposed`, with a
   clear goal and a way to tell when it is done. Make each part a sub-issue
@@ -46,7 +51,29 @@ Then make progress on the issue in one of these ways:
   it asks for where it is done: the file and the name of the definition,
   function or theorem, and the pull request or issue that did it.
 
-Before you push work for a pull request, review it as its reviewer will:
+**Out of time.** This job is stopped at {{.Deadline}}; `date -u` gives the
+time now. Nothing survives it but what you pushed. So when the work is
+long, commit and push to the branch each time a step is done, before you
+know whether you will finish. Work until 20 minutes before that time. If
+the work is not finished and checked by then, stop and hand it over: push
+what you have, then open the pull request as a draft
+(`gh pr create --draft`). Open it last, and push nothing after it: another
+agent may take the draft up at once. Its description ends with
+`Closes #{{.Number}}`, and has a section `## Progress` that says:
+
+- what is done, and whether the branch builds;
+- what remains, in the order to do it;
+- what the next agent should know: what you tried that failed, and why,
+  and which commands take long.
+
+Later jobs go on from the draft, each with a fresh agent that knows only
+what the branch and that section tell it, until one finishes the work and
+marks the pull request ready for review. A draft is for work that must be
+one pull request. Where parts of it could be merged one by one, **Split
+it** instead.
+
+Before you push work for a pull request that is ready for review, review
+it as its reviewer will:
 read your committed changes (`git diff origin/main...`, or against
 whichever branch the pull request targets) and check each of these,
 fixing what falls short.

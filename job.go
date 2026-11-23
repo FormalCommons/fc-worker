@@ -23,7 +23,13 @@ type prompt struct {
 	Number int
 	Title  string
 	Why    string // why the item needs this job, such as "checks failed"
+	// Deadline is when the job is stopped, such as "2026-11-23 20:29 UTC":
+	// its start plus the job's limit.
+	Deadline string
 }
+
+// deadlineLayout is the form of a prompt's Deadline.
+const deadlineLayout = "2006-01-02 15:04 UTC"
 
 // runJob renders the job's prompt, t, into a file and runs the job's
 // command with it. When the timeout passes or ctx ends, the command
@@ -42,7 +48,8 @@ func runJob(ctx context.Context, c *Config, job string, t *template.Template, it
 		kind = "pull request"
 	}
 	owner, name, _ := strings.Cut(c.Repo, "/")
-	err = t.Execute(f, prompt{c.Repo, owner, name, kind, it.Number, it.Title, why})
+	deadline := time.Now().Add(j.limit()).UTC().Format(deadlineLayout)
+	err = t.Execute(f, prompt{c.Repo, owner, name, kind, it.Number, it.Title, why, deadline})
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

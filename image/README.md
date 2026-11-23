@@ -20,7 +20,7 @@ worker hosts in with `podman login ghcr.io`.
 
 | Variable | Meaning |
 |---|---|
-| `HIVE_BROKER_URL`, `HIVE_BROKER_TOKEN` | The broker and the client token whose GitHub tokens the job uses: the agent App's for work, fix and triage, the reviewer App's for review. |
+| `HIVE_BROKER_URL`, `HIVE_BROKER_TOKEN` | The broker and the client token whose GitHub tokens the job uses: the agent App's for work, continue, fix and triage, the reviewer App's for review. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | hive-gateway and the job's gateway token, for `claude`. |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | Who the job's commits are by, such as the agent App. |
 
@@ -36,7 +36,7 @@ and Mathlib's build cache again. Two mounts keep them on the host:
 
 Both hold programs that jobs run, such as `lean`, `lake` and `leantar`,
 and any job that can write to them can change those programs for every job
-that uses them after it. So share them only among work, fix and triage
+that uses them after it. So share them only among work, continue, fix and triage
 jobs, which run as the same App anyway. Give review jobs no cache, or a
 cache of their own: a review job that ran a program a work agent had
 planted would run it with the reviewer's token, read-only mount or not.
