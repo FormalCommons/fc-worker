@@ -41,6 +41,10 @@ func TestRunJob(t *testing.T) {
 // TestRunJobDeadline checks that a prompt's Deadline is the job's start plus
 // its limit, or plus its timeout if it has no limit.
 func TestRunJobDeadline(t *testing.T) {
+	// The deadline is in UTC wherever the worker runs.
+	local := time.Local
+	time.Local = time.FixedZone("test", -7*60*60)
+	defer func() { time.Local = local }()
 	dir := t.TempDir()
 	prompt := filepath.Join(dir, "work.md")
 	os.WriteFile(prompt, []byte("{{.Deadline}}"), 0o600)

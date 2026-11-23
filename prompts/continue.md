@@ -1,6 +1,8 @@
 You are continuing pull request #{{.Number}} in {{.Repo}}: "{{.Title}}".
 It is a draft: the job that began it ran out of time before the work was
-finished, and handed it over.
+finished, and handed it over. If its description has no `## Progress`
+section, someone made it a draft later: read its comments and reviews to
+see why before you go on.
 
 If it is merged, closed or no longer a draft
 (`gh pr view {{.Number}} -R {{.Repo}} --json state,isDraft`), it needs
@@ -50,9 +52,10 @@ it does and why, without the Progress section, ending with the same
 ready for review with `gh pr ready {{.Number}}`. From then on it is
 reviewed and merged like any other pull request.
 
-**If the work will not be finished** and checked 20 minutes before this
-job is stopped: push what you have, and bring the Progress section up to
-date (`gh pr edit {{.Number}} --body-file …`), so that it says:
+**If the work is not finished** and checked 20 minutes before this job
+is stopped, stop there: push what you have, and bring the Progress section
+up to date (`gh pr edit {{.Number}} --body-file …`, with the rest of the
+description as it was, its `Closes #…` line included), so that it says:
 
 - what is done, and whether the branch builds;
 - what remains, in the order to do it;
@@ -60,15 +63,17 @@ date (`gh pr edit {{.Number}} --body-file …`), so that it says:
   and which commands take long.
 
 Leave the pull request a draft. The next job goes on from there, with a
-fresh agent that knows only what the branch and that section tell it. Push
-at least one commit: a job that pushes none counts as one that changed
-nothing, and after a few of those in a row the pull request waits for a
-person.
+fresh agent that knows only what the branch and that section tell it. A
+job that pushes no commit counts as one that changed nothing, and after a
+few of those in a row the pull request waits for a person. If the work is
+stuck, that is the right outcome: say why in the Progress section, and do
+not push a commit for its own sake.
 
 **If the pull request cannot do its issue as it stands**, because the
 approach is wrong or other work must come first, say why in a comment and
-close it with `gh pr close {{.Number}}`. The issue then comes back to an
-agent, who reads this pull request. If other work must come first, create
+close it with `gh pr close {{.Number}} --delete-branch`. The issue then
+comes back to an agent, who reads this pull request and begins the branch
+anew. If other work must come first, create
 an issue for it with `gh issue create --label proposed` and mark it as
 blocking the issue this pull request closes, before you close the pull
 request:

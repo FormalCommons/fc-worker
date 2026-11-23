@@ -54,10 +54,12 @@ Then make progress on the issue in one of these ways:
 **Out of time.** This job is stopped at {{.Deadline}}; `date -u` gives the
 time now. Nothing survives it but what you pushed. So when the work is
 long, commit and push to the branch each time a step is done, before you
-know whether you will finish. If the work will not be finished and checked
-20 minutes before that time, hand it over: push what you have, and open
-the pull request as a draft (`gh pr create --draft`). Its description ends
-with `Closes #{{.Number}}`, and has a section `## Progress` that says:
+know whether you will finish. Work until 20 minutes before that time. If
+the work is not finished and checked by then, stop and hand it over: push
+what you have, then open the pull request as a draft
+(`gh pr create --draft`). Open it last, and push nothing after it: another
+agent may take the draft up at once. Its description ends with
+`Closes #{{.Number}}`, and has a section `## Progress` that says:
 
 - what is done, and whether the branch builds;
 - what remains, in the order to do it;

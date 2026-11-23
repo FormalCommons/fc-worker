@@ -36,7 +36,7 @@ and Mathlib's build cache again. Two mounts keep them on the host:
 
 Both hold programs that jobs run, such as `lean`, `lake` and `leantar`,
 and any job that can write to them can change those programs for every job
-that uses them after it. So share them only among work, fix and triage
+that uses them after it. So share them only among work, continue, fix and triage
 jobs, which run as the same App anyway. Give review jobs no cache, or a
 cache of their own: a review job that ran a program a work agent had
 planted would run it with the reviewer's token, read-only mount or not.

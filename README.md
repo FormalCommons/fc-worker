@@ -83,9 +83,11 @@ opens the pull request as a draft, and continue jobs take it up, each with
 a fresh agent, until one marks it ready. Until then it gets no review and
 no fix, whatever its checks say. Each prompt can tell its agent when the
 job will be stopped (`{{.Deadline}}`). `max_rounds` and `idle_rounds`
-bound these rounds like any others: a continue job that pushes no commit
-changed nothing. To hold a draft of the agent App back from the workers,
-label it `needs-human`.
+bound these rounds like any others: a continue job that ends by itself
+without a new commit changed nothing. One that is stopped at its deadline
+is a failed command, which does not count toward `idle_rounds`, so only
+`max_rounds` bounds a draft whose jobs keep running out of time. To hold
+a draft of the agent App back from the workers, label it `needs-human`.
 
 ## The worker
 
@@ -319,8 +321,8 @@ use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
 the item needs the job, such as "checks failed", and `{{.Deadline}}`, when
 the job will be stopped, such as "2026-11-23 20:29 UTC". Files named `_*.md`
 beside a prompt are read with it, so prompts can share text:
-[prompts/_checks.md](prompts/_checks.md), the points that work, fix and
-review jobs all check, is included with `{{template "_checks.md" .}}`.
+[prompts/_checks.md](prompts/_checks.md), the points that work, continue,
+fix and review jobs all check, is included with `{{template "_checks.md" .}}`.
 
 The worker reads the prompt again for every job, so prompts can change
 while it runs. With `prompts`, they live in a git repository of their own,
@@ -402,8 +404,8 @@ name and email for its commits.
 - Issues that block each other, or are each other's sub-issues, wait
   forever. Nothing detects such a cycle yet.
 - Without the Workflows permission, the agent App cannot push commits that
-  change workflow files. So a fix job cannot merge in a base branch whose
-  workflows changed since the pull request began.
+  change workflow files. So a fix or continue job cannot merge in a base
+  branch whose workflows changed since the pull request began.
 - Whether the Apps can still comment and review while the repository's
   interactions are limited to collaborators.
 - Whether GitHub still counts the reviewer's approval, under "require
