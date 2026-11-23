@@ -20,7 +20,7 @@ worker hosts in with `podman login ghcr.io`.
 
 | Variable | Meaning |
 |---|---|
-| `HIVE_BROKER_URL`, `HIVE_BROKER_TOKEN` | The broker and the client token whose GitHub tokens the job uses: the agent App's for work, fix and triage, the reviewer App's for review. |
+| `HIVE_BROKER_URL`, `HIVE_BROKER_TOKEN` | The broker and the client token whose GitHub tokens the job uses: the agent App's for work, continue, fix and triage, the reviewer App's for review. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` | hive-gateway and the job's gateway token, for `claude`. |
 | `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` | Who the job's commits are by, such as the agent App. |
 

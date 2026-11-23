@@ -36,7 +36,8 @@ type Config struct {
 	// Apps are the logins of other GitHub Apps, such as
 	// "github-actions[bot]", whose issues count as the project's own.
 	Apps []string `json:"apps"`
-	// Jobs holds how to run each job: "work", "fix", "review" and "triage".
+	// Jobs holds how to run each job: "work", "continue", "fix", "review"
+	// and "triage".
 	Jobs map[string]Job `json:"jobs"`
 	// Prompts, if set, is a git repository that holds the prompts. Each
 	// job's Prompt is then a path in it.
@@ -89,9 +90,22 @@ type Job struct {
 	Command []string `json:"command"`
 	// Timeout stops a job that takes longer.
 	Timeout duration `json:"timeout"`
+	// Limit, if set, is how long the command gives its agent before it
+	// stops it by itself, as a container with a timeout of its own does.
+	// It is at most Timeout. The prompt's Deadline is the job's start plus
+	// Limit. Default: Timeout.
+	Limit duration `json:"limit"`
 }
 
-var jobNames = []string{"work", "fix", "review", "triage"}
+// limit is how long the job's agent has.
+func (j Job) limit() time.Duration {
+	if j.Limit.Duration > 0 {
+		return j.Limit.Duration
+	}
+	return j.Timeout.Duration
+}
+
+var jobNames = []string{"work", "continue", "fix", "review", "triage"}
 
 // duration is a time.Duration written as a string, such as "90m".
 type duration struct{ time.Duration }
@@ -204,6 +218,9 @@ func (c *Config) validate() error {
 		}
 		if !slices.ContainsFunc(j.Command, func(a string) bool { return strings.Contains(a, "{prompt}") }) {
 			return fmt.Errorf("jobs: %s: command does not use {prompt}", name)
+		}
+		if j.Limit.Duration < 0 || j.Limit.Duration > j.Timeout.Duration {
+			return fmt.Errorf("jobs: %s: limit must be between 0 and timeout", name)
 		}
 	}
 	for _, name := range jobNames {

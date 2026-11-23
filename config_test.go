@@ -16,7 +16,8 @@ const testConfig = `{
   "agent": "fc-agent[bot]",
   "reviewer": "fc-reviewer[bot]",
   "jobs": {
-    "work":   {"prompt": "work.md",   "command": ["run", "{prompt}"], "timeout": "90m"},
+    "work":   {"prompt": "work.md",   "command": ["run", "{prompt}"], "timeout": "90m", "limit": "85m"},
+    "continue": {"prompt": "continue.md", "command": ["run", "{prompt}"], "timeout": "90m"},
     "fix":    {"prompt": "fix.md",    "command": ["run", "{prompt}"], "timeout": "90m"},
     "review": {"prompt": "review.md", "command": ["run", "--prompt={prompt}"], "timeout": "30m"},
     "triage": {"prompt": "triage.md", "command": ["run", "{prompt}"], "timeout": "10m"}
@@ -42,6 +43,9 @@ func TestLoadConfig(t *testing.T) {
 	}
 	if c.Jobs["review"].Timeout.Duration != 30*time.Minute {
 		t.Errorf("review timeout %v", c.Jobs["review"].Timeout)
+	}
+	if w, k := c.Jobs["work"], c.Jobs["continue"]; w.limit() != 85*time.Minute || k.limit() != 90*time.Minute {
+		t.Errorf("limits %v and %v, want the work job's own and the continue job's timeout", w.limit(), k.limit())
 	}
 	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" || c.RateReserve != 1000 {
 		t.Errorf("defaults %d %d %v %q %d", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs, c.RateReserve)
@@ -95,6 +99,8 @@ func TestConfigErrors(t *testing.T) {
 		{`"--prompt={prompt}"`, `"--prompt"`, "{prompt}"},
 		{`"triage"`, `"other"`, "unknown job"},
 		{`"10m"`, `"ten"`, "duration"},
+		{`"85m"`, `"91m"`, "limit"},
+		{`"85m"`, `"-1m"`, "limit"},
 		{`"name": "w1"`, `"name": "w 1"`, "name"},
 		{`"repo"`, `"repository"`, "unknown field"},
 		{`"name": "w1"`, `"name": "w1", "maintainers": ["fc-agent[bot]"]`, "maintainers"},

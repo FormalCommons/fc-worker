@@ -38,6 +38,36 @@ func TestRunJob(t *testing.T) {
 	}
 }
 
+// TestRunJobDeadline checks that a prompt's Deadline is the job's start plus
+// its limit, or plus its timeout if it has no limit.
+func TestRunJobDeadline(t *testing.T) {
+	dir := t.TempDir()
+	prompt := filepath.Join(dir, "work.md")
+	os.WriteFile(prompt, []byte("{{.Deadline}}"), 0o600)
+	out := filepath.Join(dir, "out")
+	for _, tc := range []struct{ limit, want time.Duration }{{0, 2 * time.Hour}, {30 * time.Minute, 30 * time.Minute}} {
+		c := &Config{Repo: "o/r", Jobs: map[string]Job{"work": {
+			Prompt:  prompt,
+			Command: []string{"sh", "-c", `cp "$1" ` + out, "sh", "{prompt}"},
+			Timeout: duration{2 * time.Hour},
+			Limit:   duration{tc.limit},
+		}}}
+		start := time.Now()
+		if started, err := runJob(context.Background(), c, "work", mustParse(t, prompt), Item{Number: 7}, "ready"); !started || err != nil {
+			t.Fatal(started, err)
+		}
+		got, _ := os.ReadFile(out)
+		deadline, err := time.Parse(deadlineLayout, string(got))
+		if err != nil {
+			t.Fatalf("limit %v: deadline %q: %v", tc.limit, got, err)
+		}
+		// The deadline is given to the minute.
+		if d := deadline.Sub(start.Add(tc.want)); d < -time.Minute || d > time.Minute {
+			t.Errorf("limit %v: deadline %q is %v from the start plus %v", tc.limit, got, d, tc.want)
+		}
+	}
+}
+
 func TestRunJobLogs(t *testing.T) {
 	dir := t.TempDir()
 	prompt := filepath.Join(dir, "p.md")
@@ -131,7 +161,7 @@ func TestPrompts(t *testing.T) {
 			t.Fatal(err)
 		}
 		var b strings.Builder
-		if err := tmpl.Execute(&b, prompt{"o/r", "o", "r", "issue", 7, "Do it", "ready"}); err != nil {
+		if err := tmpl.Execute(&b, prompt{"o/r", "o", "r", "issue", 7, "Do it", "ready", "2026-01-01 00:00 UTC"}); err != nil {
 			t.Errorf("%s: %v", job, err)
 		}
 		if !strings.Contains(b.String(), "#7") {

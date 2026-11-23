@@ -173,7 +173,7 @@ func (p *promptRepo) check(ctx context.Context, commit string) error {
 			return fmt.Errorf("%s: %w", f, err)
 		}
 		for _, kind := range []string{"issue", "pull request"} {
-			if err := t.Execute(io.Discard, prompt{"o/r", "o", "r", kind, 1, "A title", "ready"}); err != nil {
+			if err := t.Execute(io.Discard, prompt{"o/r", "o", "r", kind, 1, "A title", "ready", "2026-01-01 00:00 UTC"}); err != nil {
 				return fmt.Errorf("%s %w: %w", f, errRender, err)
 			}
 		}

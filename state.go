@@ -50,7 +50,13 @@ func next(it Item, c *Config) (job, why string) {
 		return "", "labelled needs-human"
 	}
 	if it.Draft {
-		return "", "draft"
+		// A work job that runs out of time opens its pull request as a
+		// draft, and continue jobs go on with it until one marks it ready.
+		// Checks, conflicts and reviews wait until then.
+		if it.Ours {
+			return "continue", "a draft, so its work is unfinished"
+		}
+		return "", "draft; its author decides when it is ready"
 	}
 	if it.Outside {
 		return "", "opened by someone outside the project; a maintainer decides"
@@ -125,7 +131,7 @@ func next(it Item, c *Config) (job, why string) {
 }
 
 // order is the order in which jobs are picked.
-var order = []string{park, autoMerge, "fix", "review", "triage", "work"}
+var order = []string{park, autoMerge, "fix", "review", "continue", "triage", "work"}
 
 // issueOutside reports whether an issue's author is outside the project.
 // The config's apps count as in it for issues alone: their pull requests and
