@@ -21,7 +21,9 @@ Find out where the work stands:
 
 - The description's `## Progress` section says what is done, what remains
   and what the agents before you learned:
-  `gh pr view {{.Number}} --comments`.
+  `gh pr view {{.Number}} --json body -q .body`. The comments and reviews
+  are in `gh pr view {{.Number}} --comments`, which does not print the
+  description.
 - The issue the pull request closes says what the work is for.
 - The branch has the work so far: `git log origin/main..HEAD`, and
   `git diff origin/main...` (or against whichever branch the pull request
