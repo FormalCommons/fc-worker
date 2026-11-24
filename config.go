@@ -56,6 +56,10 @@ type Config struct {
 	// leave for the jobs that are running: the worker waits while fewer
 	// points or requests remain. Default 1000; 1 turns the check off.
 	RateReserve int `json:"rate_reserve"`
+	// MergeFirstLimit is how long a pull request labelled merge-first
+	// holds the others back from the merge queue, from when the label was
+	// added. Default 4h.
+	MergeFirstLimit duration `json:"merge_first_limit"`
 	// Logs is a directory for the jobs' output: each job's standard output
 	// goes to a file of its own there, which the worker never deletes.
 	// Without it, jobs' output goes to the worker's own.
@@ -264,8 +268,11 @@ func (c *Config) validate() error {
 	if c.RateReserve == 0 {
 		c.RateReserve = 1000
 	}
-	if c.IdleRounds < 0 || c.MaxRounds < 0 || c.Poll.Duration < 0 || c.RateReserve < 0 {
-		return errors.New("idle_rounds, max_rounds, poll and rate_reserve must not be negative")
+	if c.MergeFirstLimit.Duration == 0 {
+		c.MergeFirstLimit.Duration = 4 * time.Hour
+	}
+	if c.IdleRounds < 0 || c.MaxRounds < 0 || c.Poll.Duration < 0 || c.RateReserve < 0 || c.MergeFirstLimit.Duration < 0 {
+		return errors.New("idle_rounds, max_rounds, poll, rate_reserve and merge_first_limit must not be negative")
 	}
 	return nil
 }

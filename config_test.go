@@ -47,8 +47,8 @@ func TestLoadConfig(t *testing.T) {
 	if w, k := c.Jobs["work"], c.Jobs["continue"]; w.limit() != 85*time.Minute || k.limit() != 90*time.Minute {
 		t.Errorf("limits %v and %v, want the work job's own and the continue job's timeout", w.limit(), k.limit())
 	}
-	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" || c.RateReserve != 1000 {
-		t.Errorf("defaults %d %d %v %q %d", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs, c.RateReserve)
+	if c.IdleRounds != 3 || c.MaxRounds != 20 || c.Poll.Duration != 2*time.Minute || c.Logs != "" || c.RateReserve != 1000 || c.MergeFirstLimit.Duration != 4*time.Hour {
+		t.Errorf("defaults %d %d %v %q %d %v", c.IdleRounds, c.MaxRounds, c.Poll, c.Logs, c.RateReserve, c.MergeFirstLimit)
 	}
 
 	t.Setenv("TEST_MAINTAINER", "bob")
@@ -105,6 +105,7 @@ func TestConfigErrors(t *testing.T) {
 		{`"repo"`, `"repository"`, "unknown field"},
 		{`"name": "w1"`, `"name": "w1", "maintainers": ["fc-agent[bot]"]`, "maintainers"},
 		{`"name": "w1"`, `"name": "w1", "apps": ["github-actions"]`, "apps"},
+		{`"name": "w1"`, `"name": "w1", "merge_first_limit": "-1h"`, "merge_first_limit"},
 	} {
 		_, err := loadConfig(writeConfig(t, strings.Replace(testConfig, tc.old, tc.new, 1)))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
