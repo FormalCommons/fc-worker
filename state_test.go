@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,23 +91,27 @@ func TestNextMergeFirst(t *testing.T) {
 		it.PR, it.Ours, it.Number, it.Checks = true, true, number, "SUCCESS"
 		return it
 	}
+	const waits = "approved; waiting until #7, labelled merge-first, has merged"
 	for _, tc := range []struct {
 		name string
 		it   Item
 		want string
+		why  string // if not "", the reason wanted
 	}{
-		{"it is approved", pr(7, Item{Review: "APPROVED"}), autoMerge},
-		{"it left the queue once", pr(7, Item{Review: "APPROVED", Removals: 1}), autoMerge},
-		{"another is approved", pr(8, Item{Review: "APPROVED"}), ""},
-		{"another left the queue once", pr(8, Item{Review: "APPROVED", Removals: 1}), ""},
-		{"another left the queue twice", pr(8, Item{Review: "APPROVED", Removals: 2}), "fix"},
-		{"another's approval does not count", pr(8, Item{Review: "APPROVED", Decision: "REVIEW_REQUIRED"}), park},
-		{"another is not reviewed", pr(8, Item{}), "review"},
-		{"another has a conflict", pr(8, Item{Conflict: true}), "fix"},
-		{"an issue", Item{Number: 9}, "work"},
+		{"it is approved", pr(7, Item{Review: "APPROVED"}), autoMerge, "approved"},
+		{"it left the queue once", pr(7, Item{Review: "APPROVED", Removals: 1}), autoMerge, ""},
+		{"another is approved", pr(8, Item{Review: "APPROVED"}), "", waits},
+		{"another left the queue once", pr(8, Item{Review: "APPROVED", Removals: 1}), "", waits},
+		{"another left the queue twice", pr(8, Item{Review: "APPROVED", Removals: 2}), "fix", ""},
+		{"another is in the queue", pr(8, Item{Review: "APPROVED", Queued: true}), "", "approved, waiting for the merge queue"},
+		{"another has auto-merge on", pr(8, Item{Review: "APPROVED", AutoMerge: true}), "", "approved, waiting for the merge queue"},
+		{"another's approval does not count", pr(8, Item{Review: "APPROVED", Decision: "REVIEW_REQUIRED"}), park, ""},
+		{"another is not reviewed", pr(8, Item{}), "review", ""},
+		{"another has a conflict", pr(8, Item{Conflict: true}), "fix", ""},
+		{"an issue", Item{Number: 9}, "work", ""},
 	} {
-		if got, why := next(tc.it, c, 7); got != tc.want {
-			t.Errorf("%s: got %q (%s), want %q", tc.name, got, why, tc.want)
+		if got, why := next(tc.it, c, 7); got != tc.want || tc.why != "" && why != tc.why {
+			t.Errorf("%s: got %q (%s), want %q (%s)", tc.name, got, why, tc.want, tc.why)
 		}
 	}
 }
@@ -136,10 +145,69 @@ func TestFirst(t *testing.T) {
 			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
 		}
 	}
+
+	no := "labelled merge-first, which does not count: "
+	for _, tc := range []struct {
+		name string
+		it   Item
+		f    int
+		want string
+	}{
+		{"an issue", Item{Number: 1}, 7, ""},
+		{"not labelled", Item{Number: 2, PR: true}, 7, ""},
+		{"it merges first", held, 7, "merges first until 23:00 UTC"},
+		{"another goes before it", with(func(it *Item) { it.Number = 9 }), 7, "labelled merge-first; #7 goes before it"},
+		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 labels were added since"},
+		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, no + "added more than 4h0m0s ago"},
+		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
+		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
+		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
+	} {
+		if got := firstNote(tc.it, tc.f, c, now); got != tc.want {
+			t.Errorf("note, %s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestSurveyMergeFirst checks that survey reads who labelled a pull request
+// merge-first, and when, from GitHub's answer.
+func TestSurveyMergeFirst(t *testing.T) {
+	const pr = `{"id": "PR_%[1]d", "number": %[1]d, "title": "t", "mergeable": "MERGEABLE",
+		"author": {"__typename": "Bot", "login": "fc-agent"},
+		"labels": {"nodes": [{"name": "merge-first"}]},
+		"timelineItems": {"nodes": []},
+		"labeled": {"nodes": [
+			{"createdAt": "2026-11-24T18:00:00Z", "label": {"name": "other"}, "actor": {"__typename": "User", "login": "maint"}},
+			{"createdAt": "2026-11-24T19:00:00Z", "label": {"name": "merge-first"}, "actor": {"__typename": %[2]q, "login": %[3]q}}]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case !strings.Contains(string(body), "pullRequests("):
+			fmt.Fprint(w, `{"data": {"repository": {"issues": {"nodes": []}}}}`)
+		case !strings.Contains(string(body), "labeled: timelineItems(last: 20, itemTypes: [LABELED_EVENT])"):
+			http.Error(w, "the query does not ask for the label events", http.StatusBadRequest)
+		default:
+			fmt.Fprintf(w, `{"data": {"repository": {"pullRequests": {"nodes": [%s, %s]}}}}`,
+				fmt.Sprintf(pr, 7, "User", "maint"), fmt.Sprintf(pr, 8, "Bot", "fc-agent"))
+		}
+	}))
+	defer srv.Close()
+	g := &github{api: srv.URL, client: srv.Client(), token: "t", expires: time.Now().Add(time.Hour)}
+	c := &Config{Repo: "o/r", Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}}
+	items, err := survey(context.Background(), g, c)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("survey: %d items, %v", len(items), err)
+	}
+	if want := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC); !items[0].FirstSince.Equal(want) {
+		t.Errorf("labelled by a maintainer: %v, want %v", items[0].FirstSince, want)
+	}
+	if !items[1].FirstSince.IsZero() {
+		t.Errorf("labelled by the agent App: %v, want zero", items[1].FirstSince)
+	}
 }
 
 func TestFirstSince(t *testing.T) {
-	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}, Apps: []string{"github-actions[bot]"}}
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint", "github-actions"}, Apps: []string{"github-actions[bot]"}}
 	t0 := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC)
 	add := func(name string, a *actor, d time.Duration) labeled {
 		l := labeled{CreatedAt: t0.Add(d), Actor: a}
@@ -157,7 +225,7 @@ func TestFirstSince(t *testing.T) {
 		{"not labelled", []string{"other"}, []labeled{add("other", maint, 0)}, time.Time{}},
 		{"label removed again", []string{"other"}, []labeled{add(mergeFirst, maint, 0)}, time.Time{}},
 		{"by a maintainer", has, []labeled{add(mergeFirst, maint, 0), add("other", agent, time.Hour)}, t0},
-		{"by a listed App", has, []labeled{add(mergeFirst, &actor{"Bot", "github-actions"}, 0)}, t0},
+		{"by an App in apps", has, []labeled{add(mergeFirst, &actor{"Bot", "github-actions"}, 0)}, time.Time{}},
 		{"by the agent App", has, []labeled{add(mergeFirst, agent, 0)}, time.Time{}},
 		{"by the reviewer App", has, []labeled{add(mergeFirst, &actor{"Bot", "fc-reviewer"}, 0)}, time.Time{}},
 		{"by a person outside the config", has, []labeled{add(mergeFirst, &actor{"User", "mallory"}, 0)}, time.Time{}},

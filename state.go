@@ -36,7 +36,7 @@ type Item struct {
 	AutoMerge    bool
 	Queued       bool
 	Removals     int       // times it left the merge queue without merging since the reviewer's verdict and the latest commit, counting at most 2
-	FirstSince   time.Time // when it was labelled merge-first, if it still is and the label counts: see firstSince
+	FirstSince   time.Time // when a maintainer labelled it merge-first, if it still has the label: see firstSince
 }
 
 // Next jobs that the worker does by itself, without an agent.
@@ -49,9 +49,9 @@ const (
 const mergeFirst = "merge-first"
 
 // next returns the job an item needs, or "" if it needs none now, and why.
-// first is the number of the pull request that merges first, or 0 if there
-// is none: see first.
-func next(it Item, c *Config, first int) (job, why string) {
+// f is the number of the pull request that merges first, or 0 if there is
+// none: see first.
+func next(it Item, c *Config, f int) (job, why string) {
 	has := func(l string) bool { return slices.Contains(it.Labels, l) }
 	if has("needs-human") {
 		return "", "labelled needs-human"
@@ -122,6 +122,10 @@ func next(it Item, c *Config, first int) (job, why string) {
 		return park, "approved by the reviewer, but a person's request for changes stands"
 	case it.Decision == "REVIEW_REQUIRED":
 		return park, "approved by the reviewer, but GitHub still requires a review: the reviewer's approval does not count, or more are required"
+	// While another pull request merges first, this one stays out of the
+	// merge queue, since its merge could give that one a new conflict.
+	case f != 0 && f != it.Number && !it.AutoMerge && !it.Queued:
+		return "", fmt.Sprintf("approved; waiting until #%d, labelled %s, has merged", f, mergeFirst)
 	// Removed from the merge queue once since the approval and the latest
 	// commit: put it back once before a fix job, since the cause may be
 	// outside the code, such as a failed download in CI. A second removal
@@ -129,11 +133,6 @@ func next(it Item, c *Config, first int) (job, why string) {
 	// even a bare merge of the base branch, onto which GitHub moves the
 	// approval; max_rounds bounds these rounds, and idle_rounds parks a pull
 	// request whose fixes push nothing.
-	//
-	// While another pull request merges first, this one stays out of the
-	// merge queue, since its merge could give that one a new conflict.
-	case first != 0 && first != it.Number && !it.AutoMerge && !it.Queued:
-		return "", fmt.Sprintf("approved; waiting until #%d, labelled %s, has merged", first, mergeFirst)
 	case !it.AutoMerge && !it.Queued && it.Removals == 1:
 		return autoMerge, "removed from the merge queue once since its approval and its latest commit; it goes back in once before a fix"
 	case !it.AutoMerge && !it.Queued:
@@ -146,9 +145,10 @@ func next(it Item, c *Config, first int) (job, why string) {
 var order = []string{park, autoMerge, "fix", "review", "continue", "triage", "work"}
 
 // first returns the number of the pull request that merges first, or 0 if
-// there is none. It is the oldest pull request from the project that has
-// been labelled merge-first for less than merge_first_limit and is neither
-// a draft nor parked; items come oldest first. While there is one, the
+// there is none. It is the pull request with the lowest number among those
+// from the project that a maintainer labelled merge-first less than
+// merge_first_limit ago and that are neither drafts nor parked; items come
+// in the order of their numbers. While there is one, the
 // workers put no other pull request in the merge queue, and pick its jobs
 // before all others. The label is for a pull request that changes so many
 // files that the merges of others would give it a new conflict before its
@@ -158,12 +158,37 @@ var order = []string{park, autoMerge, "fix", "review", "continue", "triage", "wo
 // request that never gets through from holding back the others for good.
 func first(items []Item, c *Config, now time.Time) int {
 	for _, it := range items {
-		if it.PR && !it.Draft && !it.Outside && !slices.Contains(it.Labels, "needs-human") &&
+		if !it.Draft && !it.Outside && !slices.Contains(it.Labels, "needs-human") &&
 			!it.FirstSince.IsZero() && now.Sub(it.FirstSince) < c.MergeFirstLimit.Duration {
 			return it.Number
 		}
 	}
 	return 0
+}
+
+// firstNote says, for a pull request labelled merge-first, until when it
+// merges first, or why it does not; it is "" for any other item. f is the
+// number that first returned.
+func firstNote(it Item, f int, c *Config, now time.Time) string {
+	limit := c.MergeFirstLimit.Duration
+	no := "labelled " + mergeFirst + ", which does not count: "
+	switch {
+	case !it.PR || !slices.Contains(it.Labels, mergeFirst):
+		return ""
+	case it.Number == f:
+		return "merges first until " + it.FirstSince.Add(limit).UTC().Format("15:04 UTC")
+	case it.FirstSince.IsZero():
+		return no + "no maintainer in the config added it, or 20 labels were added since"
+	case now.Sub(it.FirstSince) >= limit:
+		return no + fmt.Sprintf("added more than %v ago", limit)
+	case it.Draft:
+		return no + "a draft"
+	case it.Outside:
+		return no + "from outside the project"
+	case slices.Contains(it.Labels, "needs-human"):
+		return no + "parked"
+	}
+	return fmt.Sprintf("labelled %s; #%d goes before it", mergeFirst, f)
 }
 
 // labeled is the adding of a label to a pull request.
@@ -177,9 +202,10 @@ type labeled struct {
 
 // firstSince returns when the label merge-first was last added to a pull
 // request that has it, from the latest additions of labels to it, oldest
-// first. The label counts only from a maintainer in the config or one of
-// its apps, and otherwise the result is zero. The agent App can label
-// anything, so a misled agent could otherwise hold back every merge.
+// first. The label counts only from a maintainer in the config, and
+// otherwise the result is zero. The agent App can label anything, so a
+// misled agent could otherwise hold back every merge; and it can make an
+// App in the config's apps act, through the code that workflows run.
 // GitHub does not say how the one who added a label is associated with
 // the repository, so its owner, organization members and collaborators
 // count only if the config lists them.
@@ -194,12 +220,7 @@ func firstSince(labels []string, added []labeled, c *Config) time.Time {
 		}
 	}
 	a := last.Actor
-	switch {
-	case a == nil:
-		return time.Time{}
-	case a.Typename == "User" && slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, a.Login) }):
-		return last.CreatedAt
-	case slices.ContainsFunc(c.Apps, a.is):
+	if a != nil && a.Typename == "User" && slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, a.Login) }) {
 		return last.CreatedAt
 	}
 	return time.Time{}

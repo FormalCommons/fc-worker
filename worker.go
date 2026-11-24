@@ -45,7 +45,7 @@ func candidates(items []Item, c *Config) []candidate {
 		}
 	}
 	slices.SortStableFunc(out, func(a, b candidate) int {
-		if af, bf := a.Number == f, b.Number == f; af != bf {
+		if af, bf := f != 0 && a.Number == f, f != 0 && b.Number == f; af != bf {
 			if af {
 				return -1
 			}
@@ -361,6 +361,9 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 		cand.job, cand.why = next(it, w.c, f)
 		if cand.job == "" {
 			cand.job = "-"
+		}
+		if note := firstNote(it, f, w.c, time.Now()); note != "" {
+			cand.why = strings.TrimPrefix(cand.why+"; "+note, "; ")
 		}
 		claimed := ""
 		if h, ok := held[cand.key()]; ok && time.Now().Before(h.Lease.Expires) {

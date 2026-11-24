@@ -44,7 +44,7 @@ pull request from GitHub. The first row that matches decides:
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
-| Pull request of the agent App that the reviewer approved on its latest commit, and that GitHub would take, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged |
+| Pull request of the agent App that the reviewer approved on its latest commit, that GitHub would take, and that neither has auto-merge on nor is in the merge queue, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged |
 | Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it. After a first removal from the merge queue since the approval and the latest commit, it turns auto-merge on again, once, since the cause may be outside the code, such as a failed download in CI |
 
 Every state either has a job or waits for something that has one, so
@@ -193,8 +193,8 @@ and a review again, which take longer than the next conflict takes to
 come. GitHub starts no `pull_request` workflow for a pull request that has
 a conflict.
 
-Label such a pull request `merge-first`. While it is open, ready for
-review and not parked:
+Label such a pull request `merge-first`. While it is open, from the
+project, ready for review and not parked:
 
 - the workers turn on auto-merge for no other pull request, so the default
   branch stops moving once the merge queue is empty. Pull requests that
@@ -206,15 +206,19 @@ review and not parked:
 The label counts for `merge_first_limit`, 4 hours by default, from when it
 was added, so that a pull request that never gets through does not hold
 the others back for good. Remove the label and add it again to start the
-time anew. Of two labelled pull requests, the older goes first, and the
-other waits like the rest.
+time anew. Of two labelled pull requests, the one with the lower number
+goes first, and the other waits like the rest; its own time runs
+meanwhile.
 
-The label counts only if a maintainer in the config's `maintainers`, or
-one of its `apps`, added it. From anyone else it does nothing: the agent
-App can label anything, so a misled agent could otherwise stop every
-merge. GitHub does not tell the worker whether the one who added a label
-is an owner, organization member or collaborator, so those must be in
-`maintainers` for this.
+The label counts only if a maintainer in the config's `maintainers` added
+it. From anyone else it does nothing: the agent App can label anything, so
+a misled agent could otherwise stop every merge, and an App in `apps` acts
+on what workflows run. GitHub does not tell the worker whether the one who
+added a label is an owner, organization member or collaborator, so those
+must be in `maintainers` for this. The worker reads the last 20 additions
+of labels to a pull request, so a label that was added before those does
+not count either. `fc-worker -list` shows until when a labelled pull
+request merges first, or why its label does not count.
 
 ## Setting up a repository
 
@@ -241,10 +245,10 @@ is an owner, organization member or collaborator, so those must be in
    most recent push, require the CI checks, and require the merge queue.
    Allow auto-merge in the repository's settings.
 4. Create the labels `proposed`, `close-proposed`, `needs-human` and
-   `merge-first`. List
-   the people in the project in the config's `maintainers`, or add them as
-   collaborators: the Apps see a private organization member as outside
-   the project. `fc-worker -list` shows how the worker sees each item.
+   `merge-first`. List the people in the project in the config's
+   `maintainers`, or add them as collaborators: the Apps see a private
+   organization member as outside the project. `fc-worker -list` shows how
+   the worker sees each item.
 5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
 6. Open the first issue, such as "Formalize the plan in PLAN.md". The first
@@ -431,8 +435,7 @@ name and email for its commits.
   them put in only what the project controls, such as fixed text and a
   checked tag name, never text from elsewhere. Agents can make it act
   through the code that workflows run, but that gives them nothing they
-  cannot do as the agent App. A listed App's `merge-first` label counts
-  too, so the same holds for the workflows that can label pull requests.
+  cannot do as the agent App.
 
 ## Open points
 
