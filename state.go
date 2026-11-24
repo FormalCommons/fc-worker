@@ -205,7 +205,7 @@ func firstNote(it Item, f int, c *Config, now time.Time) string {
 	case it.FirstSince.IsZero():
 		return no + "no maintainer in the config added it, or 20 events came since"
 	case !now.Before(until):
-		return what + ", which counted until " + until.UTC().Format("15:04 UTC")
+		return what + ", which counted until " + until.UTC().Format("15:04 UTC on 2 January")
 	}
 	return fmt.Sprintf("%s; #%d goes before it", what, f)
 }
@@ -292,8 +292,10 @@ func issueFirstSince(labels []string, events []event, author *actor, opened time
 // opened, or, if it was opened as a draft, when it was first marked ready.
 // A pull request that is made a draft and marked ready again keeps its
 // time, so that this cannot begin its merging first anew. The events are
-// its latest, oldest first; if the first marking is not among them any
-// more, the result can be a later one.
+// its latest, oldest first. Once 20 events have come since the first
+// marking, the result can be a later marking, or when it was opened; what
+// a pull request gets from an issue stays within firstIssueSpan all the
+// same.
 func ready(opened time.Time, events []event) time.Time {
 	for _, e := range events {
 		switch e.Typename {

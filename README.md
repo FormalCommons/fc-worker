@@ -177,7 +177,7 @@ up to a minute, while the claim is still the worker's.
 | `proposed` | An agent created this issue. A triage job checks it before anyone works on it. |
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
-| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer or an App in `apps`: the pull request that closes it does. See [below](#merging-one-pull-request-first). |
+| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer, or from an App in `apps` that opens the issue with it: each pull request that closes it does. See [below](#merging-one-pull-request-first). |
 
 People in the project steer the work through issues, comments and reviews.
 An issue that one of them opens is ready at once. Labelling anything
@@ -227,8 +227,9 @@ then merges first as if it had the label. Its time runs from when it was
 ready for review: from when it was opened or, if it was opened as a draft,
 from when it was first marked ready. If the issue got the label after
 that, the time runs from then. Making the pull request a draft and ready
-again does not start the time anew. The label does not pass to the
-issue's sub-issues.
+again does not start the time anew, unless 20 events have come since it
+was first ready (the worker reads the latest 20). The label does not pass
+to the issue's sub-issues.
 
 On an issue the label counts from a maintainer in `maintainers`, and from
 an App in `apps` that opened the issue with the label, as a workflow does
@@ -249,7 +250,8 @@ the pull request.
 
 `fc-worker -list` shows, for a pull request that has the label or closes
 an issue whose label counts, until when it merges first or why it does
-not, and for a labelled issue whether its label counts.
+not. For a labelled issue it shows whether the label counts only once an
+open pull request closes the issue.
 
 While an open pull request closes an open issue that has the label, each
 survey costs one GraphQL point more. The worker asks who labelled ten such
@@ -472,10 +474,13 @@ name and email for its commits.
   them put in only what the project controls, such as fixed text and a
   checked tag name, never text from elsewhere. Agents can make it act
   through the code that workflows run. That gives them one thing that
-  they cannot do as the agent App: an issue that it opens with the label
+  they cannot do as the agent App: each issue that it opens with the label
   `merge-first` lets their pull requests hold the others back from the
   merge queue, for at most three days and `merge_first_limit` (see
-  [Merging one pull request first](#merging-one-pull-request-first)).
+  [Merging one pull request first](#merging-one-pull-request-first)). So
+  a workflow that opens issues with this label must open them rarely, and
+  by a rule that agents cannot get around: they can edit and close its
+  issues.
 
 ## Open points
 

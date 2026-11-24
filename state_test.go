@@ -162,7 +162,7 @@ func TestFirst(t *testing.T) {
 		{"it merges first", held, 7, "merges first until 23:00 UTC"},
 		{"another goes before it", with(func(it *Item) { it.Number = 9 }), 7, "labelled merge-first; #7 goes before it"},
 		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 events came since"},
-		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC"},
+		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC on 24 November"},
 		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
 		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
 		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
@@ -172,7 +172,7 @@ func TestFirst(t *testing.T) {
 		{"it closes a labelled issue, with a label of its own", with(func(it *Item) { it.FirstIssue = 5; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 		{"it closes a labelled issue", closes, 7, "merges first until 23:00 UTC"},
 		{"it closes a labelled issue, as a draft", with(func(it *Item) { *it = closes; it.Draft = true }), 0, "closes #5, labelled merge-first, which does not count: a draft"},
-		{"it closes a labelled issue, too long ago", with(func(it *Item) { *it = closes; it.FirstSince = now.Add(-5 * time.Hour) }), 0, "closes #5, labelled merge-first, which counted until 19:00 UTC"},
+		{"it closes a labelled issue, too long ago", with(func(it *Item) { *it = closes; it.FirstSince = now.Add(-5 * time.Hour) }), 0, "closes #5, labelled merge-first, which counted until 19:00 UTC on 24 November"},
 		{"it closes a labelled issue, another goes before it", with(func(it *Item) { *it = closes; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 	} {
 		if got := firstNote(tc.it, tc.f, c, now); got != tc.want {
@@ -207,6 +207,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 	}
 	var issues, addings string
 	var asked []string // the queries about labelled issues
+	var fails bool     // whether GitHub answers those with an error
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Query string `json:"query"`
@@ -216,6 +217,10 @@ func TestSurveyMergeFirst(t *testing.T) {
 		switch {
 		case strings.Contains(q, "issue(number: "):
 			asked = append(asked, q)
+			if fails {
+				fmt.Fprint(w, `{"data": {"repository": {"i3": null}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", "i3"], "message": "Could not resolve to an Issue with the number of 3."}]}`)
+				return
+			}
 			fmt.Fprintf(w, `{"data": {"repository": {%s}}}`, addings)
 		case !strings.Contains(q, "pullRequests("):
 			if !strings.Contains(q, "id number title createdAt authorAssociation") ||
@@ -345,6 +350,14 @@ func TestSurveyMergeFirst(t *testing.T) {
 		}
 	}
 
+	// If GitHub does not say who labelled the issues, the survey fails, so
+	// that no worker acts as if nothing merged first.
+	fails, asked = true, nil
+	if items, err := survey(context.Background(), g, c); err == nil || len(asked) != 1 {
+		t.Errorf("survey without an answer about the labelled issues: %d items, asked %d times, %v; want an error", len(items), len(asked), err)
+	}
+	fails = false
+
 	// It asks about ten issues at most, the oldest.
 	var many []string
 	for n := 31; n <= 42; n++ {
@@ -384,6 +397,7 @@ func TestFirstSince(t *testing.T) {
 		{"label removed again", []string{"other"}, []event{add(mergeFirst, maint, 0)}, time.Time{}, time.Time{}},
 		{"by a maintainer", has, []event{add(mergeFirst, maint, time.Hour), add("other", agent, 2*time.Hour)}, t0.Add(time.Hour), t0.Add(time.Hour)},
 		{"by the App, with the opening", has, []event{add(mergeFirst, app, 2*time.Second)}, time.Time{}, t0.Add(2 * time.Second)},
+		{"by the App, just under a minute after the opening", has, []event{add(mergeFirst, app, 59*time.Second)}, time.Time{}, t0.Add(59 * time.Second)},
 		{"by the App, a minute after the opening", has, []event{add(mergeFirst, app, time.Minute)}, time.Time{}, time.Time{}},
 		{"by another App in apps, with the opening", has, []event{add(mergeFirst, other, 2*time.Second)}, time.Time{}, time.Time{}},
 		{"by the agent App", has, []event{add(mergeFirst, agent, 0)}, time.Time{}, time.Time{}},
