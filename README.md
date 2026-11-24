@@ -44,7 +44,7 @@ pull request from GitHub. The first row that matches decides:
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
-| Pull request of the agent App that the reviewer approved on its latest commit, that GitHub would take, and that neither has auto-merge on nor is in the merge queue, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged |
+| Pull request of the agent App that the reviewer approved on its latest commit, that GitHub would take, and that neither has auto-merge on nor is in the merge queue, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged or its label no longer counts |
 | Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it. After a first removal from the merge queue since the approval and the latest commit, it turns auto-merge on again, once, since the cause may be outside the code, such as a failed download in CI |
 
 Every state either has a job or waits for something that has one, so
@@ -247,7 +247,8 @@ request merges first, or why its label does not count.
 4. Create the labels `proposed`, `close-proposed`, `needs-human` and
    `merge-first`. List the people in the project in the config's
    `maintainers`, or add them as collaborators: the Apps see a private
-   organization member as outside the project. `fc-worker -list` shows how
+   organization member as outside the project. A `merge-first` label
+   counts only from someone in `maintainers`. `fc-worker -list` shows how
    the worker sees each item.
 5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.

@@ -177,16 +177,16 @@ func firstNote(it Item, f int, c *Config, now time.Time) string {
 		return ""
 	case it.Number == f:
 		return "merges first until " + it.FirstSince.Add(limit).UTC().Format("15:04 UTC")
-	case it.FirstSince.IsZero():
-		return no + "no maintainer in the config added it, or 20 labels were added since"
-	case now.Sub(it.FirstSince) >= limit:
-		return no + fmt.Sprintf("added more than %v ago", limit)
 	case it.Draft:
 		return no + "a draft"
 	case it.Outside:
 		return no + "from outside the project"
 	case slices.Contains(it.Labels, "needs-human"):
 		return no + "parked"
+	case it.FirstSince.IsZero():
+		return no + "no maintainer in the config added it, or 20 labels were added since"
+	case now.Sub(it.FirstSince) >= limit:
+		return no + fmt.Sprintf("added %v ago or more", limit)
 	}
 	return fmt.Sprintf("labelled %s; #%d goes before it", mergeFirst, f)
 }

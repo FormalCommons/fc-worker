@@ -355,14 +355,15 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ITEM\tNEXT\tWHY\tCLAIMED BY\tTITLE")
-	f := first(items, w.c, time.Now())
+	now := time.Now()
+	f := first(items, w.c, now)
 	for _, it := range items {
 		cand := candidate{Item: it}
 		cand.job, cand.why = next(it, w.c, f)
 		if cand.job == "" {
 			cand.job = "-"
 		}
-		if note := firstNote(it, f, w.c, time.Now()); note != "" {
+		if note := firstNote(it, f, w.c, now); note != "" {
 			cand.why = strings.TrimPrefix(cand.why+"; "+note, "; ")
 		}
 		claimed := ""

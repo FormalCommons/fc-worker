@@ -158,7 +158,7 @@ func TestFirst(t *testing.T) {
 		{"it merges first", held, 7, "merges first until 23:00 UTC"},
 		{"another goes before it", with(func(it *Item) { it.Number = 9 }), 7, "labelled merge-first; #7 goes before it"},
 		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 labels were added since"},
-		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, no + "added more than 4h0m0s ago"},
+		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, no + "added 4h0m0s ago or more"},
 		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
 		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
 		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
@@ -184,7 +184,8 @@ func TestSurveyMergeFirst(t *testing.T) {
 		switch {
 		case !strings.Contains(string(body), "pullRequests("):
 			fmt.Fprint(w, `{"data": {"repository": {"issues": {"nodes": []}}}}`)
-		case !strings.Contains(string(body), "labeled: timelineItems(last: 20, itemTypes: [LABELED_EVENT])"):
+		case !strings.Contains(string(body), "labeled: timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {") ||
+			!strings.Contains(string(body), "nodes { ... on LabeledEvent { createdAt label { name } actor { __typename login } } }"):
 			http.Error(w, "the query does not ask for the label events", http.StatusBadRequest)
 		default:
 			fmt.Fprintf(w, `{"data": {"repository": {"pullRequests": {"nodes": [%s, %s]}}}}`,
