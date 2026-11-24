@@ -177,7 +177,7 @@ up to a minute, while the claim is still the worker's.
 | `proposed` | An agent created this issue. A triage job checks it before anyone works on it. |
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
-| `merge-first` | On a pull request, from a maintainer: this one merges before all others. See [below](#merging-one-pull-request-first). |
+| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer, or from an App in `apps` that opens the issue with it: each pull request that closes it does. See [below](#merging-one-pull-request-first). |
 
 People in the project steer the work through issues, comments and reviews.
 An issue that one of them opens is ready at once. Labelling anything
@@ -210,15 +210,52 @@ time anew. Of two labelled pull requests, the one with the lower number
 goes first, and the other waits like the rest; its own time runs
 meanwhile.
 
-The label counts only if a maintainer in the config's `maintainers` added
-it. From anyone else it does nothing: the agent App can label anything, so
-a misled agent could otherwise stop every merge, and an App in `apps` acts
-on what workflows run. GitHub does not tell the worker whether the one who
-added a label is an owner, organization member or collaborator, so those
-must be in `maintainers` for this. The worker reads the last 20 additions
-of labels to a pull request, so a label that was added before those does
-not count either. `fc-worker -list` shows until when a labelled pull
-request merges first, or why its label does not count.
+On a pull request, the label counts only if a maintainer in the config's
+`maintainers` added it. From anyone else it does nothing: the agent App
+can label anything, so a misled agent could otherwise stop every merge,
+and an App in `apps` acts on what workflows run. GitHub does not tell the
+worker whether the one who added a label is an owner, organization member
+or collaborator, so those must be in `maintainers` for this. The worker
+reads the latest 20 events of a pull request (a label added, marked ready,
+made a draft), so a label that was added before those does not count
+either.
+
+**The label on an issue.** The label can also go on an issue, before
+there is a pull request. Each pull request from the project that closes
+the issue, by `Closes #N` in its description or a link made on GitHub,
+then merges first as if it had the label. Its time runs from when it was
+ready for review: from when it was opened or, if it was opened as a draft,
+from when it was first marked ready. If the issue got the label after
+that, the time runs from then. Making the pull request a draft and ready
+again does not start the time anew, unless 20 events have come since it
+was first ready (the worker reads the latest 20). The label does not pass
+to the issue's sub-issues.
+
+On an issue the label counts from a maintainer in `maintainers`, and from
+an App in `apps` that opened the issue with the label, as a workflow does
+with `gh issue create --label merge-first`. So a workflow that opens an
+issue for such a change can label it, and nobody has to be there when the
+pull request comes. The App's label on an issue that someone else opened,
+or one that it adds later, does not count.
+
+The agents decide which pull requests close an issue, so they decide
+which ones get its label, and each gets a `merge_first_limit` of its own.
+What bounds this is a second limit: a pull request gets nothing from the
+issue if it was ready for review three days or more after the issue got
+the label. So one label on an issue holds nothing back later than three
+days and `merge_first_limit` after it was added. To end it sooner, remove
+the label from the issue; a label that a maintainer put on the pull
+request itself still counts. To give such a pull request more time, label
+the pull request.
+
+`fc-worker -list` shows, for a pull request that has the label or closes
+an issue whose label counts, until when it merges first or why it does
+not. For a labelled issue it shows whether the label counts only once an
+open pull request closes the issue.
+
+While an open pull request closes an open issue that has the label, each
+survey costs one GraphQL point more. The worker asks who labelled ten such
+issues at most, the oldest.
 
 ## Setting up a repository
 
@@ -248,7 +285,8 @@ request merges first, or why its label does not count.
    `merge-first`. List the people in the project in the config's
    `maintainers`, or add them as collaborators: the Apps see a private
    organization member as outside the project. A `merge-first` label
-   counts only from someone in `maintainers`. `fc-worker -list` shows how
+   counts only from someone in `maintainers`, and on an issue also from an
+   App in `apps` that opens the issue with it. `fc-worker -list` shows how
    the worker sees each item.
 5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
@@ -347,7 +385,7 @@ unset or empty, the worker refuses to start.
 | `name` | This worker, in claims and comments. Give every worker its own name. |
 | `broker` | A hive-broker for the agent App, and this worker's client token for it. |
 | `agent`, `reviewer` | The two Apps' logins. |
-| `apps` | Logins of other GitHub Apps, such as `github-actions[bot]`, whose issues count as the project's own: for example those of a scheduled workflow that opens issues for the agents. Their pull requests and reviews still count as outside. See the security notes before listing one. |
+| `apps` | Logins of other GitHub Apps, such as `github-actions[bot]`, whose issues count as the project's own: for example those of a scheduled workflow that opens issues for the agents. The label `merge-first` counts on an issue that such an App opens with it. Their pull requests and reviews still count as outside. See the security notes before listing one. |
 | `maintainers` | Logins of people in the project, besides the repository's owners, organization members and collaborators. List any whose organization membership is private. Remove a login before its owner renames or deletes the account, since someone else could then take it. |
 | `prompts` | Optional: a git repository that holds the prompts (see below), as `repo`, a URL that git can fetch with the credentials of the user the worker runs as; `ref`, the branch to follow, default `main`; and `refresh`, how long to use a fetched commit before fetching again, default `1m`. `ref` can also be a tag or a commit, to hold the prompts still. |
 | `jobs` | For each of `work`, `continue`, `fix`, `review` and `triage`: `prompt`, the path of its prompt, a file, or a path in the `prompts` repository if there is one; `command`, which runs the job, with each `{prompt}` replaced by the path of the rendered prompt; `timeout`, after which the command gets SIGTERM, and SIGKILL 30 seconds later; and optionally `limit`, at most `timeout`, if the command stops its agent sooner by itself, as hive-agent's `-timeout` does. The prompt's `{{.Deadline}}` is the job's start plus `limit`, or plus `timeout` without it. |
@@ -355,7 +393,7 @@ unset or empty, the worker refuses to start.
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
-| `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added. Default `4h`. |
+| `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added; for one that closes a labelled issue, from when it was ready for review, or from when the issue got the label if that was later. Default `4h`. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
@@ -435,8 +473,14 @@ name and email for its commits.
   `watch` and the like) can write issues, and if the workflows that do write
   them put in only what the project controls, such as fixed text and a
   checked tag name, never text from elsewhere. Agents can make it act
-  through the code that workflows run, but that gives them nothing they
-  cannot do as the agent App.
+  through the code that workflows run. That gives them one thing that
+  they cannot do as the agent App: each issue that it opens with the label
+  `merge-first` lets their pull requests hold the others back from the
+  merge queue, for at most three days and `merge_first_limit` (see
+  [Merging one pull request first](#merging-one-pull-request-first)). So
+  a workflow that opens issues with this label must open them rarely, and
+  by a rule that agents cannot get around: they can edit and close its
+  issues.
 
 ## Open points
 

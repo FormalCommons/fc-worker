@@ -34,7 +34,8 @@ type Config struct {
 	// such members here.
 	Maintainers []string `json:"maintainers"`
 	// Apps are the logins of other GitHub Apps, such as
-	// "github-actions[bot]", whose issues count as the project's own.
+	// "github-actions[bot]", whose issues count as the project's own. The
+	// label merge-first counts on an issue that such an App opens with it.
 	Apps []string `json:"apps"`
 	// Jobs holds how to run each job: "work", "continue", "fix", "review"
 	// and "triage".
@@ -58,7 +59,9 @@ type Config struct {
 	RateReserve int `json:"rate_reserve"`
 	// MergeFirstLimit is how long a pull request labelled merge-first
 	// holds the others back from the merge queue, from when the label was
-	// added. Default 4h.
+	// added. For one that closes an issue with the label, it is from when
+	// the pull request was ready for review, or from when the issue got
+	// the label if that was later. Default 4h.
 	MergeFirstLimit duration `json:"merge_first_limit"`
 	// Logs is a directory for the jobs' output: each job's standard output
 	// goes to a file of its own there, which the worker never deletes.
