@@ -20,6 +20,11 @@ type worker struct {
 	prompts *promptRepo // nil if the prompts are files
 }
 
+// survey returns every open issue and pull request, oldest first.
+func (w *worker) survey(ctx context.Context) ([]Item, error) {
+	return survey(ctx, direct{w.gh, w.c.Repo}, w.gh, w.c)
+}
+
 // candidate is an item that needs a job now.
 type candidate struct {
 	Item
@@ -89,7 +94,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	items, err := survey(ctx, w.gh, w.c)
+	items, err := w.survey(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -172,7 +177,7 @@ func (w *worker) prompt(ctx context.Context, job, commit string) (*template.Temp
 // rounds in all. A failed command does not count toward idle_rounds, so that
 // an outage, such as of the gateway, does not park item after item.
 func (w *worker) record(ctx context.Context, cand candidate, version string, jobErr error) error {
-	items, err := survey(ctx, w.gh, w.c)
+	items, err := w.survey(ctx)
 	if err != nil {
 		return err
 	}
@@ -349,7 +354,7 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	items, err := survey(ctx, w.gh, w.c)
+	items, err := w.survey(ctx)
 	if err != nil {
 		return err
 	}
