@@ -396,7 +396,7 @@ const issuesQuery = `query($owner: String!, $name: String!, $after: String) {
     issues(states: OPEN, first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        id number title createdAt authorAssociation
+        id number title createdAt authorAssociation updatedAt
         author { __typename login }
         labels(first: 30) { nodes { name } }
         blockedBy(first: 50) { nodes { state } }
@@ -412,7 +412,7 @@ const pullsQuery = `query($owner: String!, $name: String!, $after: String) {
     pullRequests(states: OPEN, first: 25, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        id number title createdAt isDraft headRefOid mergeable reviewDecision isInMergeQueue authorAssociation
+        id number title createdAt isDraft headRefOid mergeable reviewDecision isInMergeQueue authorAssociation updatedAt
         author { __typename login }
         labels(first: 30) { nodes { name } }
         autoMergeRequest { enabledAt }
@@ -435,15 +435,19 @@ type page struct {
 }
 
 type names struct {
-	Nodes []struct {
-		Name string `json:"name"`
-	} `json:"nodes"`
+	Nodes []nameNode `json:"nodes"`
+}
+
+type nameNode struct {
+	Name string `json:"name"`
 }
 
 type states struct {
-	Nodes []struct {
-		State string `json:"state"`
-	} `json:"nodes"`
+	Nodes []stateNode `json:"nodes"`
+}
+
+type stateNode struct {
+	State string `json:"state"`
 }
 
 func (s states) open() int {
@@ -464,62 +468,157 @@ func (l names) list() []string {
 	return out
 }
 
-// survey returns every open issue and pull request, oldest first.
-func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
-	owner, name, _ := strings.Cut(c.Repo, "/")
-	var items []Item
-	// The issues labelled merge-first that an open pull request closes.
-	var asks []firstIssue
+// facts are the open issues and pull requests of the repository, as GitHub
+// gives them.
+type facts struct {
+	// AsOf is when the reading of them began.
+	AsOf   time.Time
+	Issues []issueNode
+	Pulls  []pullNode
+}
+
+// source reads the facts: from GitHub, or from a desk that follows it.
+type source interface {
+	facts(ctx context.Context) (*facts, error)
+}
+
+type issueNode struct {
+	ID                string    `json:"id"`
+	Number            int       `json:"number"`
+	Title             string    `json:"title"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	AuthorAssociation string    `json:"authorAssociation"`
+	Author            *actor    `json:"author"`
+	Labels            names     `json:"labels"`
+	BlockedBy         states    `json:"blockedBy"`
+	SubIssues         states    `json:"subIssues"`
+	ClosedBy          struct {
+		Nodes []closingPR `json:"nodes"`
+	} `json:"closedByPullRequestsReferences"`
+}
+
+type pullNode struct {
+	ID                string    `json:"id"`
+	Number            int       `json:"number"`
+	Title             string    `json:"title"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	IsDraft           bool      `json:"isDraft"`
+	HeadRefOid        string    `json:"headRefOid"`
+	Mergeable         string    `json:"mergeable"`
+	ReviewDecision    string    `json:"reviewDecision"`
+	IsInMergeQueue    bool      `json:"isInMergeQueue"`
+	AuthorAssociation string    `json:"authorAssociation"`
+	Author            *actor    `json:"author"`
+	Labels            names     `json:"labels"`
+	AutoMergeRequest  *struct{} `json:"autoMergeRequest"`
+	Commits           struct {
+		Nodes []headCommit `json:"nodes"`
+	} `json:"commits"`
+	Reviews struct {
+		Nodes []review `json:"nodes"`
+	} `json:"reviews"`
+	TimelineItems struct {
+		Nodes []removal `json:"nodes"`
+	} `json:"timelineItems"`
+	Events struct {
+		Nodes []event `json:"nodes"`
+	} `json:"events"`
+}
+
+// headCommit is the latest commit of a pull request.
+type headCommit struct {
+	Commit struct {
+		CommittedDate     time.Time  `json:"committedDate"`
+		StatusCheckRollup *stateNode `json:"statusCheckRollup"`
+	} `json:"commit"`
+}
+
+// direct reads the facts from GitHub.
+type direct struct {
+	g    *github
+	repo string
+}
+
+func (d direct) facts(ctx context.Context) (*facts, error) {
+	owner, name, _ := strings.Cut(d.repo, "/")
+	f := &facts{AsOf: time.Now()}
 	for after := ""; ; {
 		var r struct {
 			Repository struct {
 				Issues struct {
-					PageInfo page `json:"pageInfo"`
-					Nodes    []struct {
-						ID                string    `json:"id"`
-						Number            int       `json:"number"`
-						Title             string    `json:"title"`
-						CreatedAt         time.Time `json:"createdAt"`
-						AuthorAssociation string    `json:"authorAssociation"`
-						Author            *actor    `json:"author"`
-						Labels            names     `json:"labels"`
-						BlockedBy         states    `json:"blockedBy"`
-						SubIssues         states    `json:"subIssues"`
-						ClosedBy          struct {
-							Nodes []closingPR `json:"nodes"`
-						} `json:"closedByPullRequestsReferences"`
-					} `json:"nodes"`
+					PageInfo page        `json:"pageInfo"`
+					Nodes    []issueNode `json:"nodes"`
 				} `json:"issues"`
 			} `json:"repository"`
 		}
-		if err := g.graphql(ctx, issuesQuery, vars(owner, name, after), &r); err != nil {
+		if err := d.g.graphql(ctx, issuesQuery, vars(owner, name, after), &r); err != nil {
 			return nil, err
 		}
-		for _, n := range r.Repository.Issues.Nodes {
-			it := Item{
-				ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
-				Outside:      issueOutside(n.Author, n.AuthorAssociation, c),
-				OpenBlockers: n.BlockedBy.open(), OpenSubIssues: n.SubIssues.open(),
-				ClosingPRs: closing(n.ClosedBy.Nodes, c, time.Now()),
-			}
-			items = append(items, it)
-			if slices.Contains(it.Labels, mergeFirst) {
-				fi := firstIssue{Number: n.Number, Author: n.Author, Opened: n.CreatedAt, Labels: it.Labels}
-				for _, pr := range n.ClosedBy.Nodes {
-					if pr.State == "OPEN" && strings.EqualFold(pr.Repository.NameWithOwner, c.Repo) {
-						fi.PRs = append(fi.PRs, pr.Number)
-					}
-				}
-				if len(fi.PRs) > 0 {
-					asks = append(asks, fi)
-				}
-			}
-		}
+		f.Issues = append(f.Issues, r.Repository.Issues.Nodes...)
 		p := r.Repository.Issues.PageInfo
 		if !p.HasNextPage {
 			break
 		}
 		after = p.EndCursor
+	}
+	for after := ""; ; {
+		var r struct {
+			Repository struct {
+				PullRequests struct {
+					PageInfo page       `json:"pageInfo"`
+					Nodes    []pullNode `json:"nodes"`
+				} `json:"pullRequests"`
+			} `json:"repository"`
+		}
+		if err := d.g.graphql(ctx, pullsQuery, vars(owner, name, after), &r); err != nil {
+			return nil, err
+		}
+		f.Pulls = append(f.Pulls, r.Repository.PullRequests.Nodes...)
+		p := r.Repository.PullRequests.PageInfo
+		if !p.HasNextPage {
+			break
+		}
+		after = p.EndCursor
+	}
+	return f, nil
+}
+
+// survey returns every open issue and pull request, oldest first.
+func survey(ctx context.Context, src source, g *github, c *Config) ([]Item, error) {
+	f, err := src.facts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return f.items(ctx, g, c, time.Now())
+}
+
+// items returns the facts as items, oldest first. Who labelled an issue
+// merge-first is not among the facts, so it asks GitHub: see firstIssues.
+func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) ([]Item, error) {
+	var items []Item
+	// The issues labelled merge-first that an open pull request closes.
+	var asks []firstIssue
+	for _, n := range f.Issues {
+		it := Item{
+			ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
+			Outside:      issueOutside(n.Author, n.AuthorAssociation, c),
+			OpenBlockers: n.BlockedBy.open(), OpenSubIssues: n.SubIssues.open(),
+			ClosingPRs: closing(n.ClosedBy.Nodes, c, now),
+		}
+		items = append(items, it)
+		if slices.Contains(it.Labels, mergeFirst) {
+			fi := firstIssue{Number: n.Number, Author: n.Author, Opened: n.CreatedAt, Labels: it.Labels}
+			for _, pr := range n.ClosedBy.Nodes {
+				if pr.State == "OPEN" && strings.EqualFold(pr.Repository.NameWithOwner, c.Repo) {
+					fi.PRs = append(fi.PRs, pr.Number)
+				}
+			}
+			if len(fi.PRs) > 0 {
+				asks = append(asks, fi)
+			}
+		}
 	}
 	// For each pull request, the issues that it closes whose label
 	// merge-first counts.
@@ -540,101 +639,50 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 			}
 		}
 	}
-	for after := ""; ; {
-		var r struct {
-			Repository struct {
-				PullRequests struct {
-					PageInfo page `json:"pageInfo"`
-					Nodes    []struct {
-						ID                string    `json:"id"`
-						Number            int       `json:"number"`
-						Title             string    `json:"title"`
-						CreatedAt         time.Time `json:"createdAt"`
-						IsDraft           bool      `json:"isDraft"`
-						HeadRefOid        string    `json:"headRefOid"`
-						Mergeable         string    `json:"mergeable"`
-						ReviewDecision    string    `json:"reviewDecision"`
-						IsInMergeQueue    bool      `json:"isInMergeQueue"`
-						AuthorAssociation string    `json:"authorAssociation"`
-						Author            *actor    `json:"author"`
-						Labels            names     `json:"labels"`
-						AutoMergeRequest  *struct{} `json:"autoMergeRequest"`
-						Commits           struct {
-							Nodes []struct {
-								Commit struct {
-									CommittedDate     time.Time `json:"committedDate"`
-									StatusCheckRollup *struct {
-										State string `json:"state"`
-									} `json:"statusCheckRollup"`
-								} `json:"commit"`
-							} `json:"nodes"`
-						} `json:"commits"`
-						Reviews struct {
-							Nodes []review `json:"nodes"`
-						} `json:"reviews"`
-						TimelineItems struct {
-							Nodes []removal `json:"nodes"`
-						} `json:"timelineItems"`
-						Events struct {
-							Nodes []event `json:"nodes"`
-						} `json:"events"`
-					} `json:"nodes"`
-				} `json:"pullRequests"`
-			} `json:"repository"`
+	for _, n := range f.Pulls {
+		it := Item{
+			PR: true, ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
+			Outside: outside(n.Author, n.AuthorAssociation, c),
+			Draft:   n.IsDraft, Head: n.HeadRefOid,
+			Conflict: n.Mergeable == "CONFLICTING", MergeUnknown: n.Mergeable == "UNKNOWN",
+			Decision: n.ReviewDecision, AutoMerge: n.AutoMergeRequest != nil, Queued: n.IsInMergeQueue,
 		}
-		if err := g.graphql(ctx, pullsQuery, vars(owner, name, after), &r); err != nil {
-			return nil, err
+		it.Ours = n.Author.is(c.Agent)
+		var headAt time.Time
+		if c := n.Commits.Nodes; len(c) > 0 {
+			headAt = c[0].Commit.CommittedDate
+			if c[0].Commit.StatusCheckRollup != nil {
+				it.Checks = c[0].Commit.StatusCheckRollup.State
+			}
 		}
-		for _, n := range r.Repository.PullRequests.Nodes {
-			it := Item{
-				PR: true, ID: n.ID, Number: n.Number, Title: n.Title, Labels: n.Labels.list(),
-				Outside: outside(n.Author, n.AuthorAssociation, c),
-				Draft:   n.IsDraft, Head: n.HeadRefOid,
-				Conflict: n.Mergeable == "CONFLICTING", MergeUnknown: n.Mergeable == "UNKNOWN",
-				Decision: n.ReviewDecision, AutoMerge: n.AutoMergeRequest != nil, Queued: n.IsInMergeQueue,
+		for _, r := range verdicts(n.Reviews.Nodes, it.Head) {
+			switch {
+			case r.Author.is(c.Reviewer):
+				it.Review, it.ReviewedAt = r.State, r.SubmittedAt
+			case r.State == "CHANGES_REQUESTED" && !outside(&r.Author, r.AuthorAssociation, c):
+				it.Requested = true
 			}
-			it.Ours = n.Author.is(c.Agent)
-			var headAt time.Time
-			if c := n.Commits.Nodes; len(c) > 0 {
-				headAt = c[0].Commit.CommittedDate
-				if c[0].Commit.StatusCheckRollup != nil {
-					it.Checks = c[0].Commit.StatusCheckRollup.State
-				}
-			}
-			for _, r := range verdicts(n.Reviews.Nodes, it.Head) {
-				switch {
-				case r.Author.is(c.Reviewer):
-					it.Review, it.ReviewedAt = r.State, r.SubmittedAt
-				case r.State == "CHANGES_REQUESTED" && !outside(&r.Author, r.AuthorAssociation, c):
-					it.Requested = true
-				}
-			}
-			it.Removals = removals(n.TimelineItems.Nodes, it.ReviewedAt, headAt, time.Now())
-			// It merges first since a maintainer labelled it, or since it
-			// was ready for review and an issue that it closes had the
-			// label, if no more than firstIssueSpan lay between the two;
-			// the latest of these counts.
-			it.FirstSince = firstSince(it.Labels, n.Events.Nodes, c)
-			at := ready(n.CreatedAt, n.Events.Nodes)
-			for _, fi := range closes[it.Number] {
-				since := fi.Since
-				if at.After(since) {
-					since = at
-				}
-				if it.FirstIssue == 0 {
-					it.FirstIssue = fi.Number
-				}
-				if since.Sub(fi.Since) < firstIssueSpan && since.After(it.FirstSince) {
-					it.FirstSince, it.FirstIssue = since, fi.Number
-				}
-			}
-			items = append(items, it)
 		}
-		p := r.Repository.PullRequests.PageInfo
-		if !p.HasNextPage {
-			break
+		it.Removals = removals(n.TimelineItems.Nodes, it.ReviewedAt, headAt, now)
+		// It merges first since a maintainer labelled it, or since it
+		// was ready for review and an issue that it closes had the
+		// label, if no more than firstIssueSpan lay between the two;
+		// the latest of these counts.
+		it.FirstSince = firstSince(it.Labels, n.Events.Nodes, c)
+		at := ready(n.CreatedAt, n.Events.Nodes)
+		for _, fi := range closes[it.Number] {
+			since := fi.Since
+			if at.After(since) {
+				since = at
+			}
+			if it.FirstIssue == 0 {
+				it.FirstIssue = fi.Number
+			}
+			if since.Sub(fi.Since) < firstIssueSpan && since.After(it.FirstSince) {
+				it.FirstSince, it.FirstIssue = since, fi.Number
+			}
 		}
-		after = p.EndCursor
+		items = append(items, it)
 	}
 	slices.SortFunc(items, func(a, b Item) int { return a.Number - b.Number })
 	return items, nil

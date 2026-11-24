@@ -313,7 +313,7 @@ elan for Lean. Containers reach GitHub, the gateway and the broker.
 ### Usage
 
 ```
-fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-list]
+fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-list | -compare]
 ```
 
 | Flag | Meaning |
@@ -321,6 +321,7 @@ fc-worker [-config /etc/fc-worker/config.json] [-state /var/lib/fc-worker] [-lis
 | `-config` | The config file. |
 | `-state` | A directory for the worker's own files: bare git repositories per worker, which hold its claim commits and the prompts it fetched. |
 | `-list` | Print every open issue and pull request with its next job and who holds its claim, and GitHub's rate limits, then exit. |
+| `-compare` | Survey the repository from GitHub and from the config's `desk`, print what differs as one line of JSON, then exit. See "Comparing with a desk". |
 
 The worker logs a line when a job starts and when it ends. A job's
 standard output goes to a file of its own in the `logs` directory, named
@@ -341,6 +342,41 @@ after SIGHUP is a clean one, which `Restart=on-failure` would leave stopped.
 Then install the new files and run `systemctl reload 'fc-worker@*'`. A
 worker from before SIGHUP was handled exits at once on it, stopping its job,
 so restart it the first time instead.
+
+### Comparing with a desk
+
+A desk is a service that follows the repository on GitHub, keeps a copy of
+every open issue and pull request, and answers `GET /survey?repo=owner/name`
+from that copy, which costs nothing of GitHub's rate limits. The worker does
+not survey from one yet. `-compare` is for testing a desk before it does: it
+reads the facts from the desk, then from GitHub, works out the items from
+each as a survey does, and prints one line of JSON:
+
+```json
+{
+  "at": "2026-11-24T23:40:10Z", "as_of": "2026-11-24T23:39:30Z",
+  "github": {"issues": 61, "pulls": 24}, "desk": {"issues": 61, "pulls": 24},
+  "differ": [{
+    "item": "pr-20",
+    "fields": {"Queued": [true, false]},
+    "jobs": ["", ""],
+    "updated": ["2026-11-24T23:40:02Z", "2026-11-24T23:39:10Z"]
+  }]
+}
+```
+
+`at` is when it asked GitHub, and `as_of` how old the desk said its answer
+was. Each pair is GitHub's, then the desk's. `differ` lists the items for
+which the two give something different: `fields` holds the fields that
+differ, `jobs` the job the item needs next according to each, and `updated`
+when GitHub said the item last changed. An item that only one of them has
+carries `"only": "github"` or `"only": "desk"`. What changed on GitHub
+between `as_of` and `at` differs without a fault of the desk. A difference
+that lasts from one run to the next is one to look at, and so is an issue
+that differs while its two `updated` are equal. A pull request's checks,
+conflicts and place in the merge queue change without a new `updated`.
+
+It reads no claims, writes nothing, and costs what a survey costs.
 
 ### Configuration
 
@@ -394,6 +430,7 @@ unset or empty, the worker refuses to start.
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
 | `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added; for one that closes a labelled issue, from when it was ready for review, or from when the issue got the label if that was later. Default `4h`. |
+| `desk` | Optional: a desk that follows the repository (see "Comparing with a desk"), as `url` and `token`, this worker's client token for it. Only `-compare` uses it so far: the worker still reads everything from GitHub. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can

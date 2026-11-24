@@ -59,6 +59,18 @@ func TestLoadConfig(t *testing.T) {
 	if !slices.Equal(c.Maintainers, []string{"alice", "bob"}) {
 		t.Errorf("maintainers %q", c.Maintainers)
 	}
+	if c.Desk != nil {
+		t.Errorf("desk %+v, want none", c.Desk)
+	}
+
+	t.Setenv("TEST_DESK_TOKEN", "desk-secret")
+	c, err = loadConfig(writeConfig(t, strings.Replace(testConfig, `"name": "w1"`, `"name": "w1", "desk": {"url": "http://desk:8080/", "token": "${TEST_DESK_TOKEN}"}`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Desk == nil || c.Desk.URL != "http://desk:8080" || c.Desk.Token != "desk-secret" {
+		t.Errorf("desk %+v", c.Desk)
+	}
 }
 
 func TestConfigPrompts(t *testing.T) {
@@ -106,6 +118,9 @@ func TestConfigErrors(t *testing.T) {
 		{`"name": "w1"`, `"name": "w1", "maintainers": ["fc-agent[bot]"]`, "maintainers"},
 		{`"name": "w1"`, `"name": "w1", "apps": ["github-actions"]`, "apps"},
 		{`"name": "w1"`, `"name": "w1", "merge_first_limit": "-1h"`, "merge_first_limit"},
+		{`"name": "w1"`, `"name": "w1", "desk": {"url": "http://desk:8080"}`, "desk: url and token"},
+		{`"name": "w1"`, `"name": "w1", "desk": {"token": "x"}`, "desk: url and token"},
+		{`"name": "w1"`, `"name": "w1", "desk": {"url": "http://desk:8080", "token": "${TEST_UNSET}"}`, "TEST_UNSET"},
 	} {
 		_, err := loadConfig(writeConfig(t, strings.Replace(testConfig, tc.old, tc.new, 1)))
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

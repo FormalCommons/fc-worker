@@ -258,7 +258,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 	}
 
 	// No issue is labelled, so nothing is asked about issues.
-	items, err := survey(context.Background(), g, c)
+	items, err := survey(context.Background(), direct{g, c.Repo}, g, c)
 	if err != nil || len(items) != 10 || len(asked) != 0 {
 		t.Fatalf("survey: %d items, asked %d times, %v", len(items), len(asked), err)
 	}
@@ -302,7 +302,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 		fmt.Sprintf(adding, 23, "2026-11-21T18:30:00Z", "User", "maint"),
 		fmt.Sprintf(adding, 24, "2026-11-21T18:30:01Z", "User", "maint"),
 	}, ",")
-	items, err = survey(context.Background(), g, c)
+	items, err = survey(context.Background(), direct{g, c.Repo}, g, c)
 	if err != nil || len(items) != 19 || len(asked) != 1 {
 		t.Fatalf("survey with labelled issues: %d items, asked %d times, %v", len(items), len(asked), err)
 	}
@@ -353,7 +353,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 	// If GitHub does not say who labelled the issues, the survey fails, so
 	// that no worker acts as if nothing merged first.
 	fails, asked = true, nil
-	if items, err := survey(context.Background(), g, c); err == nil || len(asked) != 1 {
+	if items, err := survey(context.Background(), direct{g, c.Repo}, g, c); err == nil || len(asked) != 1 {
 		t.Errorf("survey without an answer about the labelled issues: %d items, asked %d times, %v; want an error", len(items), len(asked), err)
 	}
 	fails = false
@@ -364,7 +364,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 		many = append(many, fmt.Sprintf(issue, n, opened, "github-actions", label, refs("o/r", "OPEN", 9)))
 	}
 	issues, addings, asked = strings.Join(many, ","), fmt.Sprintf(adding, 41, "2026-11-24T17:00:02Z", "Bot", "github-actions"), nil
-	items, err = survey(context.Background(), g, c)
+	items, err = survey(context.Background(), direct{g, c.Repo}, g, c)
 	if err != nil || len(asked) != 1 {
 		t.Fatalf("survey with many labelled issues: asked %d times, %v", len(asked), err)
 	}

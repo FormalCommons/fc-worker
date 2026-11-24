@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"math/rand/v2"
@@ -18,6 +19,7 @@ func main() {
 	configPath := flag.String("config", "/etc/fc-worker/config.json", "path to the JSON config file")
 	stateDir := flag.String("state", "/var/lib/fc-worker", "directory for the worker's own files")
 	list := flag.Bool("list", false, "print every open issue and pull request with its next job, then exit")
+	compare := flag.Bool("compare", false, "print, as JSON, the items for which the config's desk and GitHub give different facts, then exit")
 	flag.Parse()
 
 	c, err := loadConfig(*configPath)
@@ -34,6 +36,20 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *compare {
+		// Before anything touches the claims: comparing reads none.
+		if c.Desk == nil {
+			log.Fatal("-compare: the config names no desk")
+		}
+		cmp, err := w.compare(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(cmp); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := w.claims.init(ctx); err != nil {
 		log.Fatal(err)
 	}

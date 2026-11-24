@@ -63,6 +63,11 @@ type Config struct {
 	// the pull request was ready for review, or from when the issue got
 	// the label if that was later. Default 4h.
 	MergeFirstLimit duration `json:"merge_first_limit"`
+	// Desk, if set, is a desk that follows the repository: a service that
+	// keeps a copy of the open issues and pull requests and answers surveys
+	// from it. Only -compare uses it so far: the worker itself still reads
+	// everything from GitHub.
+	Desk *Desk `json:"desk"`
 	// Logs is a directory for the jobs' output: each job's standard output
 	// goes to a file of its own there, which the worker never deletes.
 	// Without it, jobs' output goes to the worker's own.
@@ -71,6 +76,12 @@ type Config struct {
 
 // Broker is a hive-broker and a client token for it.
 type Broker struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
+// Desk is a desk and a client token for it.
+type Desk struct {
 	URL   string `json:"url"`
 	Token string `json:"token"`
 }
@@ -172,6 +183,10 @@ func (c *Config) expandEnv() error {
 	for i := range c.Apps {
 		expand(&c.Apps[i])
 	}
+	if c.Desk != nil {
+		expand(&c.Desk.URL)
+		expand(&c.Desk.Token)
+	}
 	if c.Prompts != nil {
 		expand(&c.Prompts.Repo)
 		expand(&c.Prompts.Ref)
@@ -205,6 +220,12 @@ func (c *Config) validate() error {
 	}
 	if c.Agent == c.Reviewer {
 		return errors.New("agent and reviewer must be different Apps, since an author cannot approve its own pull request")
+	}
+	if d := c.Desk; d != nil {
+		if d.URL == "" || d.Token == "" {
+			return errors.New("desk: url and token are required")
+		}
+		d.URL = strings.TrimSuffix(d.URL, "/")
 	}
 	for _, m := range c.Maintainers {
 		if !login.MatchString(m) {
