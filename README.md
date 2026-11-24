@@ -177,7 +177,7 @@ up to a minute, while the claim is still the worker's.
 | `proposed` | An agent created this issue. A triage job checks it before anyone works on it. |
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
-| `merge-first` | On a pull request, from a maintainer: this one merges before all others. See [below](#merging-one-pull-request-first). |
+| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer or an App in `apps`: the pull request that closes it does. See [below](#merging-one-pull-request-first). |
 
 People in the project steer the work through issues, comments and reviews.
 An issue that one of them opens is ready at once. Labelling anything
@@ -220,6 +220,21 @@ of labels to a pull request, so a label that was added before those does
 not count either. `fc-worker -list` shows until when a labelled pull
 request merges first, or why its label does not count.
 
+The label can also go on an issue, before there is a pull request. The
+pull request that closes the issue then merges first, as if it had the
+label, from when it is ready for review, or from when the issue got the
+label if that was later; a draft holds nothing back. On an issue the label
+counts from a maintainer in `maintainers` and also from an App in `apps`,
+so a workflow that opens an issue for such a change can label it, as with
+`gh issue create --label merge-first`, and nobody has to be there when the
+pull request comes. This trusts the agents further than the label on a
+pull request does: an agent could make an App in `apps` label an issue,
+through the code that workflows run, and each pull request that closes
+that issue would then hold the others back for up to `merge_first_limit`.
+Remove the label from the issue to end it. To give such a pull request
+more time, label the pull request itself. While an open issue has the
+label, each survey costs one GraphQL point more.
+
 ## Setting up a repository
 
 1. Create two GitHub Apps, one for agents and one for the reviewer, and
@@ -248,8 +263,8 @@ request merges first, or why its label does not count.
    `merge-first`. List the people in the project in the config's
    `maintainers`, or add them as collaborators: the Apps see a private
    organization member as outside the project. A `merge-first` label
-   counts only from someone in `maintainers`. `fc-worker -list` shows how
-   the worker sees each item.
+   counts only from someone in `maintainers`, and on an issue also from an
+   App in `apps`. `fc-worker -list` shows how the worker sees each item.
 5. Write `AGENTS.md`: what the project is, its conventions, and how to
    build and test it.
 6. Open the first issue, such as "Formalize the plan in PLAN.md". The first
@@ -355,7 +370,7 @@ unset or empty, the worker refuses to start.
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
-| `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added. Default `4h`. |
+| `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added; for one that closes a labelled issue, from when it was ready for review. Default `4h`. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can

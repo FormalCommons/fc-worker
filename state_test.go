@@ -91,7 +91,7 @@ func TestNextMergeFirst(t *testing.T) {
 		it.PR, it.Ours, it.Number, it.Checks = true, true, number, "SUCCESS"
 		return it
 	}
-	const waits = "approved; waiting until #7, labelled merge-first, has merged"
+	const waits = "approved; waiting until #7, which merges first, has merged"
 	for _, tc := range []struct {
 		name string
 		it   Item
@@ -121,6 +121,7 @@ func TestFirst(t *testing.T) {
 	now := time.Date(2026, 11, 24, 20, 0, 0, 0, time.UTC)
 	since := now.Add(-time.Hour)
 	held := Item{Number: 7, PR: true, Labels: []string{mergeFirst}, FirstSince: since}
+	closes := Item{Number: 7, PR: true, FirstIssue: 5, FirstSince: since}
 	with := func(f func(*Item)) Item {
 		it := held
 		f(&it)
@@ -140,6 +141,9 @@ func TestFirst(t *testing.T) {
 		{"from outside", []Item{with(func(it *Item) { it.Outside = true })}, 0},
 		{"two: the older", []Item{held, with(func(it *Item) { it.Number = 9 })}, 7},
 		{"two: the older is a draft", []Item{with(func(it *Item) { it.Draft = true }), with(func(it *Item) { it.Number = 9 })}, 9},
+		{"an issue whose label counts", []Item{{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}}, 0},
+		{"it closes a labelled issue", []Item{{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, closes}, 7},
+		{"it closes a labelled issue, as a draft", []Item{with(func(it *Item) { *it = closes; it.Draft = true })}, 0},
 	} {
 		if got := first(tc.items, c, now); got != tc.want {
 			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
@@ -158,10 +162,16 @@ func TestFirst(t *testing.T) {
 		{"it merges first", held, 7, "merges first until 23:00 UTC"},
 		{"another goes before it", with(func(it *Item) { it.Number = 9 }), 7, "labelled merge-first; #7 goes before it"},
 		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 labels were added since"},
-		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, no + "added 4h0m0s ago or more"},
+		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC"},
 		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
 		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
 		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
+		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first: a pull request that closes it merges first"},
+		{"an issue whose label does not count", Item{Number: 5, Labels: []string{mergeFirst}}, 0, no + "neither a maintainer nor an App in the config added it, or 20 labels were added since"},
+		{"it closes a labelled issue", closes, 7, "merges first until 23:00 UTC"},
+		{"it closes a labelled issue, as a draft", with(func(it *Item) { *it = closes; it.Draft = true }), 0, "closes #5, labelled merge-first, which does not count: a draft"},
+		{"it closes a labelled issue, too long ago", with(func(it *Item) { *it = closes; it.FirstSince = now.Add(-5 * time.Hour) }), 0, "closes #5, labelled merge-first, which counted until 19:00 UTC"},
+		{"it closes a labelled issue, another goes before it", with(func(it *Item) { *it = closes; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 	} {
 		if got := firstNote(tc.it, tc.f, c, now); got != tc.want {
 			t.Errorf("note, %s: %q, want %q", tc.name, got, tc.want)
@@ -169,74 +179,156 @@ func TestFirst(t *testing.T) {
 	}
 }
 
-// TestSurveyMergeFirst checks that survey reads who labelled a pull request
-// merge-first, and when, from GitHub's answer.
+// TestSurveyMergeFirst checks that survey reads from GitHub's answers who
+// labelled a pull request or an issue merge-first, and when, and passes
+// an issue's label on to the pull request that closes it.
 func TestSurveyMergeFirst(t *testing.T) {
-	const pr = `{"id": "PR_%[1]d", "number": %[1]d, "title": "t", "mergeable": "MERGEABLE",
+	const pr = `{"id": "PR_%[1]d", "number": %[1]d, "title": "t", "mergeable": "MERGEABLE", "createdAt": "2026-11-24T18:30:00Z",
 		"author": {"__typename": "Bot", "login": "fc-agent"},
-		"labels": {"nodes": [{"name": "merge-first"}]},
+		"labels": {"nodes": [%[4]s]},
 		"timelineItems": {"nodes": []},
-		"labeled": {"nodes": [
-			{"createdAt": "2026-11-24T18:00:00Z", "label": {"name": "other"}, "actor": {"__typename": "User", "login": "maint"}},
-			{"createdAt": "2026-11-24T19:00:00Z", "label": {"name": "merge-first"}, "actor": {"__typename": %[2]q, "login": %[3]q}}]}}`
+		"events": {"nodes": [
+			{"__typename": "LabeledEvent", "createdAt": "2026-11-24T18:00:00Z", "label": {"name": "other"}, "actor": {"__typename": "User", "login": "maint"}},
+			{"__typename": "LabeledEvent", "createdAt": "2026-11-24T19:00:00Z", "label": {"name": "merge-first"}, "actor": {"__typename": %[2]q, "login": %[3]q}}%[5]s]}}`
+	const label = `{"name": "merge-first"}`
+	const issue = `{"id": "I_%[1]d", "number": %[1]d, "title": "t", "authorAssociation": "NONE",
+		"author": {"__typename": "Bot", "login": "github-actions"},
+		"labels": {"nodes": [%[2]s]}}`
+	const labelled = `{"number": %[1]d, "labels": {"nodes": [{"name": "merge-first"}]},
+		"events": {"nodes": [{"__typename": "LabeledEvent", "createdAt": %[2]q, "label": {"name": "merge-first"}, "actor": {"__typename": "Bot", "login": %[3]q}}]},
+		"closedByPullRequestsReferences": {"nodes": [%[4]s]}}`
+	var issues, labelledIssues string
+	asked := 0 // times survey asked for the labelled issues
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		q := string(body)
 		switch {
-		case !strings.Contains(string(body), "pullRequests("):
-			fmt.Fprint(w, `{"data": {"repository": {"issues": {"nodes": []}}}}`)
-		case !strings.Contains(string(body), "labeled: timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {") ||
-			!strings.Contains(string(body), "nodes { ... on LabeledEvent { createdAt label { name } actor { __typename login } } }"):
+		case strings.Contains(q, `labels: [\"merge-first\"]`):
+			asked++
+			if !strings.Contains(q, "events: timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {") ||
+				!strings.Contains(q, "closedByPullRequestsReferences(first: 20) { nodes { number } }") {
+				http.Error(w, "the query does not ask for the label events and the closing pull requests", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprintf(w, `{"data": {"repository": {"issues": {"nodes": [%s]}}}}`, labelledIssues)
+		case !strings.Contains(q, "pullRequests("):
+			fmt.Fprintf(w, `{"data": {"repository": {"issues": {"nodes": [%s]}}}}`, issues)
+		case !strings.Contains(q, "id number title createdAt isDraft") ||
+			!strings.Contains(q, "events: timelineItems(last: 20, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {") ||
+			!strings.Contains(q, "nodes { __typename ... on LabeledEvent { createdAt label { name } actor { __typename login } } ... on ReadyForReviewEvent { createdAt } }"):
 			http.Error(w, "the query does not ask for the label events", http.StatusBadRequest)
 		default:
-			fmt.Fprintf(w, `{"data": {"repository": {"pullRequests": {"nodes": [%s, %s]}}}}`,
-				fmt.Sprintf(pr, 7, "User", "maint"), fmt.Sprintf(pr, 8, "Bot", "fc-agent"))
+			fmt.Fprintf(w, `{"data": {"repository": {"pullRequests": {"nodes": [%s, %s, %s, %s]}}}}`,
+				fmt.Sprintf(pr, 7, "User", "maint", label, ""), fmt.Sprintf(pr, 8, "Bot", "fc-agent", label, ""),
+				fmt.Sprintf(pr, 9, "Bot", "fc-agent", "", ""),
+				fmt.Sprintf(pr, 10, "Bot", "fc-agent", "", `, {"__typename": "ReadyForReviewEvent", "createdAt": "2026-11-24T19:30:00Z"}`))
 		}
 	}))
 	defer srv.Close()
 	g := &github{api: srv.URL, client: srv.Client(), token: "t", expires: time.Now().Add(time.Hour)}
-	c := &Config{Repo: "o/r", Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}}
+	c := &Config{Repo: "o/r", Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}, Apps: []string{"github-actions[bot]"}}
+	at := func(hour, min int) time.Time { return time.Date(2026, 11, 24, hour, min, 0, 0, time.UTC) }
+
 	items, err := survey(context.Background(), g, c)
-	if err != nil || len(items) != 2 {
+	if err != nil || len(items) != 4 {
 		t.Fatalf("survey: %d items, %v", len(items), err)
 	}
-	if want := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC); !items[0].FirstSince.Equal(want) {
-		t.Errorf("labelled by a maintainer: %v, want %v", items[0].FirstSince, want)
+	if !items[0].FirstSince.Equal(at(19, 0)) {
+		t.Errorf("labelled by a maintainer: %v, want %v", items[0].FirstSince, at(19, 0))
 	}
 	if !items[1].FirstSince.IsZero() {
 		t.Errorf("labelled by the agent App: %v, want zero", items[1].FirstSince)
+	}
+	if !items[2].FirstSince.IsZero() || items[2].FirstIssue != 0 || asked != 0 {
+		t.Errorf("no labelled issue: %v, issue %d, asked %d times; want zero, 0 and 0", items[2].FirstSince, items[2].FirstIssue, asked)
+	}
+
+	// Issue 5, labelled by a workflow at 17:00, is closed by 7, 9 and 10;
+	// issue 6, labelled by the agent App, by 8; issue 4 has another label.
+	issues = fmt.Sprintf(issue, 4, `{"name": "other"}`) + "," + fmt.Sprintf(issue, 5, label) + "," + fmt.Sprintf(issue, 6, label)
+	labelledIssues = fmt.Sprintf(labelled, 5, "2026-11-24T17:00:00Z", "github-actions", `{"number": 7}, {"number": 9}, {"number": 10}, {"number": 3}`) + "," +
+		fmt.Sprintf(labelled, 6, "2026-11-24T17:00:00Z", "fc-agent", `{"number": 8}`)
+	items, err = survey(context.Background(), g, c)
+	if err != nil || len(items) != 7 || asked != 1 {
+		t.Fatalf("survey with labelled issues: %d items, asked %d times, %v", len(items), asked, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		it    Item
+		since time.Time
+		issue int
+	}{
+		{"an issue with another label", items[0], time.Time{}, 0},
+		{"an issue labelled by a workflow", items[1], at(17, 0), 0},
+		{"an issue labelled by the agent App", items[2], time.Time{}, 0},
+		{"labelled by a maintainer after it was opened", items[3], at(19, 0), 5},
+		{"it closes an issue that the agent App labelled", items[4], time.Time{}, 0},
+		{"it closes a labelled issue, opened ready", items[5], at(18, 30), 5},
+		{"it closes a labelled issue, marked ready later", items[6], at(19, 30), 5},
+	} {
+		if !tc.it.FirstSince.Equal(tc.since) || tc.it.FirstIssue != tc.issue {
+			t.Errorf("%s (#%d): since %v, issue %d; want %v, %d", tc.name, tc.it.Number, tc.it.FirstSince, tc.it.FirstIssue, tc.since, tc.issue)
+		}
 	}
 }
 
 func TestFirstSince(t *testing.T) {
 	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint", "github-actions"}, Apps: []string{"github-actions[bot]"}}
 	t0 := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC)
-	add := func(name string, a *actor, d time.Duration) labeled {
-		l := labeled{CreatedAt: t0.Add(d), Actor: a}
-		l.Label.Name = name
-		return l
+	add := func(name string, a *actor, d time.Duration) event {
+		e := event{Typename: "LabeledEvent", CreatedAt: t0.Add(d), Actor: a}
+		e.Label.Name = name
+		return e
 	}
-	maint, agent := &actor{"User", "Maint"}, &actor{"Bot", "fc-agent"}
+	maint, agent, app := &actor{"User", "Maint"}, &actor{"Bot", "fc-agent"}, &actor{"Bot", "github-actions"}
 	has := []string{"other", mergeFirst}
 	for _, tc := range []struct {
 		name   string
 		labels []string
-		added  []labeled
+		events []event
+		want   time.Time // on a pull request
+		issue  time.Time // on an issue
+	}{
+		{"not labelled", []string{"other"}, []event{add("other", maint, 0)}, time.Time{}, time.Time{}},
+		{"label removed again", []string{"other"}, []event{add(mergeFirst, maint, 0)}, time.Time{}, time.Time{}},
+		{"by a maintainer", has, []event{add(mergeFirst, maint, 0), add("other", agent, time.Hour)}, t0, t0},
+		{"by an App in apps", has, []event{add(mergeFirst, app, 0)}, time.Time{}, t0},
+		{"by the agent App", has, []event{add(mergeFirst, agent, 0)}, time.Time{}, time.Time{}},
+		{"by the reviewer App", has, []event{add(mergeFirst, &actor{"Bot", "fc-reviewer"}, 0)}, time.Time{}, time.Time{}},
+		{"by a person outside the config", has, []event{add(mergeFirst, &actor{"User", "mallory"}, 0)}, time.Time{}, time.Time{}},
+		{"by an App with a maintainer's name", has, []event{add(mergeFirst, &actor{"Bot", "maint"}, 0)}, time.Time{}, time.Time{}},
+		{"by an App outside the config", has, []event{add(mergeFirst, &actor{"Bot", "other-app"}, 0)}, time.Time{}, time.Time{}},
+		{"by a deleted account", has, []event{add(mergeFirst, nil, 0)}, time.Time{}, time.Time{}},
+		{"added again by a maintainer", has, []event{add(mergeFirst, agent, 0), add(mergeFirst, maint, time.Hour)}, t0.Add(time.Hour), t0.Add(time.Hour)},
+		{"added again by an agent", has, []event{add(mergeFirst, maint, 0), add(mergeFirst, agent, time.Hour)}, time.Time{}, time.Time{}},
+		{"added again by an agent after an App in apps", has, []event{add(mergeFirst, app, 0), add(mergeFirst, agent, time.Hour)}, time.Time{}, time.Time{}},
+		{"its adding is not among the latest", has, []event{add("other", maint, 0)}, time.Time{}, time.Time{}},
+		{"marked ready after it", has, []event{add(mergeFirst, maint, 0), {Typename: "ReadyForReviewEvent", CreatedAt: t0.Add(time.Hour)}}, t0, t0},
+	} {
+		if got := firstSince(tc.labels, tc.events, c, false); !got.Equal(tc.want) {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+		if got := firstSince(tc.labels, tc.events, c, true); !got.Equal(tc.issue) {
+			t.Errorf("%s, on an issue: %v, want %v", tc.name, got, tc.issue)
+		}
+	}
+}
+
+func TestReady(t *testing.T) {
+	t0 := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC)
+	marked := func(d time.Duration) event { return event{Typename: "ReadyForReviewEvent", CreatedAt: t0.Add(d)} }
+	label := event{Typename: "LabeledEvent", CreatedAt: t0.Add(3 * time.Hour)}
+	for _, tc := range []struct {
+		name   string
+		events []event
 		want   time.Time
 	}{
-		{"not labelled", []string{"other"}, []labeled{add("other", maint, 0)}, time.Time{}},
-		{"label removed again", []string{"other"}, []labeled{add(mergeFirst, maint, 0)}, time.Time{}},
-		{"by a maintainer", has, []labeled{add(mergeFirst, maint, 0), add("other", agent, time.Hour)}, t0},
-		{"by an App in apps", has, []labeled{add(mergeFirst, &actor{"Bot", "github-actions"}, 0)}, time.Time{}},
-		{"by the agent App", has, []labeled{add(mergeFirst, agent, 0)}, time.Time{}},
-		{"by the reviewer App", has, []labeled{add(mergeFirst, &actor{"Bot", "fc-reviewer"}, 0)}, time.Time{}},
-		{"by a person outside the config", has, []labeled{add(mergeFirst, &actor{"User", "mallory"}, 0)}, time.Time{}},
-		{"by an App with a maintainer's name", has, []labeled{add(mergeFirst, &actor{"Bot", "maint"}, 0)}, time.Time{}},
-		{"by a deleted account", has, []labeled{add(mergeFirst, nil, 0)}, time.Time{}},
-		{"added again by a maintainer", has, []labeled{add(mergeFirst, agent, 0), add(mergeFirst, maint, time.Hour)}, t0.Add(time.Hour)},
-		{"added again by an agent", has, []labeled{add(mergeFirst, maint, 0), add(mergeFirst, agent, time.Hour)}, time.Time{}},
-		{"its adding is not among the latest", has, []labeled{add("other", maint, 0)}, time.Time{}},
+		{"opened ready", nil, t0},
+		{"opened ready, labelled later", []event{label}, t0},
+		{"marked ready", []event{marked(time.Hour), label}, t0.Add(time.Hour)},
+		{"marked ready twice", []event{marked(time.Hour), marked(2 * time.Hour), label}, t0.Add(2 * time.Hour)},
 	} {
-		if got := firstSince(tc.labels, tc.added, c); !got.Equal(tc.want) {
+		if got := ready(t0, tc.events); !got.Equal(tc.want) {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -287,6 +379,20 @@ func TestCandidates(t *testing.T) {
 	want = []string{"park 9", "auto-merge 7", "fix 5", "review 4", "review 8", "continue 3", "continue 6", "triage 2", "work 1"}
 	if !slices.Equal(got, want) {
 		t.Errorf("candidates after merge_first_limit %v, want %v", got, want)
+	}
+
+	// A pull request that closes a labelled issue merges first like one
+	// that has the label itself; the issue's own time does not hold back
+	// anything.
+	items[len(items)-2] = Item{Number: 8, PR: true, Ours: true, Checks: "SUCCESS", FirstIssue: 1, FirstSince: time.Now().Add(-time.Hour)}
+	items[0] = Item{Number: 1, Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-2 * time.Hour), ClosingPRs: 1}
+	got = nil
+	for _, cand := range candidates(items, c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
+	want = []string{"review 8", "park 9", "fix 5", "review 4", "continue 3", "continue 6", "triage 2"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates with a pull request that closes a labelled issue %v, want %v", got, want)
 	}
 }
 

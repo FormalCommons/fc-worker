@@ -16,6 +16,9 @@ type Item struct {
 	Title   string
 	Labels  []string
 	Outside bool // opened by someone outside the project
+	// FirstSince is since when a pull request merges first, or since when
+	// an issue's label merge-first counts; zero if neither: see survey.
+	FirstSince time.Time
 
 	// Issues only.
 	OpenBlockers  int // open issues that block this one
@@ -35,8 +38,8 @@ type Item struct {
 	Decision     string    // GitHub's sum of the reviews that count: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or "" if none are required
 	AutoMerge    bool
 	Queued       bool
-	Removals     int       // times it left the merge queue without merging since the reviewer's verdict and the latest commit, counting at most 2
-	FirstSince   time.Time // when a maintainer labelled it merge-first, if it still has the label: see firstSince
+	Removals     int // times it left the merge queue without merging since the reviewer's verdict and the latest commit, counting at most 2
+	FirstIssue   int // the issue it closes whose label merge-first counts, or 0
 }
 
 // Next jobs that the worker does by itself, without an agent.
@@ -45,7 +48,8 @@ const (
 	park      = "park" // label needs-human
 )
 
-// mergeFirst labels a pull request that merges before all others: see first.
+// mergeFirst labels a pull request that merges before all others, or an
+// issue whose pull request does: see first.
 const mergeFirst = "merge-first"
 
 // next returns the job an item needs, or "" if it needs none now, and why.
@@ -125,7 +129,7 @@ func next(it Item, c *Config, f int) (job, why string) {
 	// While another pull request merges first, this one stays out of the
 	// merge queue, since its merge could give that one a new conflict.
 	case f != 0 && f != it.Number && !it.AutoMerge && !it.Queued:
-		return "", fmt.Sprintf("approved; waiting until #%d, labelled %s, has merged", f, mergeFirst)
+		return "", fmt.Sprintf("approved; waiting until #%d, which merges first, has merged", f)
 	// Removed from the merge queue once since the approval and the latest
 	// commit: put it back once before a fix job, since the cause may be
 	// outside the code, such as a failed download in CI. A second removal
@@ -146,19 +150,20 @@ var order = []string{park, autoMerge, "fix", "review", "continue", "triage", "wo
 
 // first returns the number of the pull request that merges first, or 0 if
 // there is none. It is the pull request with the lowest number among those
-// from the project that a maintainer labelled merge-first less than
-// merge_first_limit ago and that are neither drafts nor parked; items come
-// in the order of their numbers. While there is one, the
-// workers put no other pull request in the merge queue, and pick its jobs
-// before all others. The label is for a pull request that changes so many
-// files that the merges of others would give it a new conflict before its
-// checks, its review and the merge queue are through, such as a move to a
-// new version of a dependency. Pull requests that are in the merge queue
-// already, or have auto-merge on, still merge. The limit keeps a pull
-// request that never gets through from holding back the others for good.
+// from the project that are neither drafts nor parked and for which a
+// label merge-first has counted for less than merge_first_limit: its own,
+// from a maintainer, or that of an issue that it closes. Items come in the
+// order of their numbers. While there is one, the workers put no other
+// pull request in the merge queue, and pick its jobs before all others.
+// The label is for a pull request that changes so many files that the
+// merges of others would give it a new conflict before its checks, its
+// review and the merge queue are through, such as a move to a new version
+// of a dependency. Pull requests that are in the merge queue already, or
+// have auto-merge on, still merge. The limit keeps a pull request that
+// never gets through from holding back the others for good.
 func first(items []Item, c *Config, now time.Time) int {
 	for _, it := range items {
-		if !it.Draft && !it.Outside && !slices.Contains(it.Labels, "needs-human") &&
+		if it.PR && !it.Draft && !it.Outside && !slices.Contains(it.Labels, "needs-human") &&
 			!it.FirstSince.IsZero() && now.Sub(it.FirstSince) < c.MergeFirstLimit.Duration {
 			return it.Number
 		}
@@ -166,17 +171,27 @@ func first(items []Item, c *Config, now time.Time) int {
 	return 0
 }
 
-// firstNote says, for a pull request labelled merge-first, until when it
-// merges first, or why it does not; it is "" for any other item. f is the
-// number that first returned.
+// firstNote says, for a pull request with a label merge-first, its own or
+// that of an issue that it closes, until when it merges first, or why it
+// does not, and for an issue with the label, whether the label counts. It
+// is "" for any other item. f is the number that first returned.
 func firstNote(it Item, f int, c *Config, now time.Time) string {
-	limit := c.MergeFirstLimit.Duration
-	no := "labelled " + mergeFirst + ", which does not count: "
+	labelled := slices.Contains(it.Labels, mergeFirst)
+	what := "labelled " + mergeFirst
+	if !labelled {
+		what = fmt.Sprintf("closes #%d, labelled %s", it.FirstIssue, mergeFirst)
+	}
+	no := what + ", which does not count: "
+	until := it.FirstSince.Add(c.MergeFirstLimit.Duration)
 	switch {
-	case !it.PR || !slices.Contains(it.Labels, mergeFirst):
+	case !labelled && it.FirstIssue == 0:
 		return ""
+	case !it.PR && it.FirstSince.IsZero():
+		return no + "neither a maintainer nor an App in the config added it, or 20 labels were added since"
+	case !it.PR:
+		return what + ": a pull request that closes it merges first"
 	case it.Number == f:
-		return "merges first until " + it.FirstSince.Add(limit).UTC().Format("15:04 UTC")
+		return "merges first until " + until.UTC().Format("15:04 UTC")
 	case it.Draft:
 		return no + "a draft"
 	case it.Outside:
@@ -185,14 +200,17 @@ func firstNote(it Item, f int, c *Config, now time.Time) string {
 		return no + "parked"
 	case it.FirstSince.IsZero():
 		return no + "no maintainer in the config added it, or 20 labels were added since"
-	case now.Sub(it.FirstSince) >= limit:
-		return no + fmt.Sprintf("added %v ago or more", limit)
+	case !now.Before(until):
+		return what + ", which counted until " + until.UTC().Format("15:04 UTC")
 	}
-	return fmt.Sprintf("labelled %s; #%d goes before it", mergeFirst, f)
+	return fmt.Sprintf("%s; #%d goes before it", what, f)
 }
 
-// labeled is the adding of a label to a pull request.
-type labeled struct {
+// event is the adding of a label to an issue or pull request, or a pull
+// request's becoming ready for review; only the first has a label and an
+// actor.
+type event struct {
+	Typename  string    `json:"__typename"`
 	CreatedAt time.Time `json:"createdAt"`
 	Label     struct {
 		Name string `json:"name"`
@@ -200,30 +218,116 @@ type labeled struct {
 	Actor *actor `json:"actor"`
 }
 
-// firstSince returns when the label merge-first was last added to a pull
-// request that has it, from the latest additions of labels to it, oldest
-// first. The label counts only from a maintainer in the config, and
-// otherwise the result is zero. The agent App can label anything, so a
-// misled agent could otherwise hold back every merge; and it can make an
-// App in the config's apps act, through the code that workflows run.
+// firstSince returns when the label merge-first was last added to an issue
+// or pull request that has it, from its latest events, oldest first. The
+// result is zero unless the one who added it counts. On a pull request
+// that is a maintainer in the config. The agent App can label anything, so
+// a misled agent could otherwise hold back every merge. On an issue it is
+// a maintainer or an App in the config's apps, so that a workflow can
+// label an issue that it opens. An agent could make such an App label an
+// issue, through the code that workflows run, so this trusts the agents
+// with merge_first_limit for each pull request that closes the issue.
 // GitHub does not say how the one who added a label is associated with
 // the repository, so its owner, organization members and collaborators
 // count only if the config lists them.
-func firstSince(labels []string, added []labeled, c *Config) time.Time {
+func firstSince(labels []string, events []event, c *Config, issue bool) time.Time {
 	if !slices.Contains(labels, mergeFirst) {
 		return time.Time{}
 	}
-	var last labeled
-	for _, l := range added {
-		if l.Label.Name == mergeFirst {
-			last = l
+	var last event
+	for _, e := range events {
+		if e.Label.Name == mergeFirst {
+			last = e
 		}
 	}
 	a := last.Actor
-	if a != nil && a.Typename == "User" && slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, a.Login) }) {
+	switch {
+	case a == nil:
+	case a.Typename == "User" && slices.ContainsFunc(c.Maintainers, func(m string) bool { return strings.EqualFold(m, a.Login) }):
+		return last.CreatedAt
+	case issue && slices.ContainsFunc(c.Apps, a.is):
 		return last.CreatedAt
 	}
 	return time.Time{}
+}
+
+// ready returns when a pull request became ready for review: when it was
+// last marked so, if that is among its latest events, oldest first, and
+// otherwise when it was opened.
+func ready(opened time.Time, events []event) time.Time {
+	at := opened
+	for _, e := range events {
+		if e.Typename == "ReadyForReviewEvent" {
+			at = e.CreatedAt
+		}
+	}
+	return at
+}
+
+// firstIssue is an open issue whose label merge-first counts.
+type firstIssue struct {
+	Number int
+	Since  time.Time // when the label was added
+	PRs    []int     // the pull requests that close it
+}
+
+// firstIssuesQuery asks for the open issues labelled merge-first, the
+// oldest ten. It costs one point.
+const firstIssuesQuery = `query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, first: 10, labels: ["` + mergeFirst + `"], orderBy: {field: CREATED_AT, direction: ASC}) {
+      nodes {
+        number
+        labels(first: 30) { nodes { name } }
+        events: timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {
+          nodes { __typename ... on LabeledEvent { createdAt label { name } actor { __typename login } } }
+        }
+        closedByPullRequestsReferences(first: 20) { nodes { number } }
+      }
+    }
+  }
+}`
+
+// firstIssues returns the open issues whose label merge-first counts,
+// oldest first. Who added a label is not in the survey of all issues,
+// where it would cost a point more for each page, so survey asks only
+// while an issue has the label.
+func firstIssues(ctx context.Context, g *github, c *Config) ([]firstIssue, error) {
+	owner, name, _ := strings.Cut(c.Repo, "/")
+	var r struct {
+		Repository struct {
+			Issues struct {
+				Nodes []struct {
+					Number int   `json:"number"`
+					Labels names `json:"labels"`
+					Events struct {
+						Nodes []event `json:"nodes"`
+					} `json:"events"`
+					ClosedBy struct {
+						Nodes []struct {
+							Number int `json:"number"`
+						} `json:"nodes"`
+					} `json:"closedByPullRequestsReferences"`
+				} `json:"nodes"`
+			} `json:"issues"`
+		} `json:"repository"`
+	}
+	if err := g.graphql(ctx, firstIssuesQuery, vars(owner, name, ""), &r); err != nil {
+		return nil, err
+	}
+	var out []firstIssue
+	for _, n := range r.Repository.Issues.Nodes {
+		since := firstSince(n.Labels.list(), n.Events.Nodes, c, true)
+		if since.IsZero() {
+			continue
+		}
+		fi := firstIssue{Number: n.Number, Since: since}
+		for _, pr := range n.ClosedBy.Nodes {
+			fi.PRs = append(fi.PRs, pr.Number)
+		}
+		out = append(out, fi)
+	}
+	return out, nil
 }
 
 // issueOutside reports whether an issue's author is outside the project.
@@ -270,7 +374,7 @@ const pullsQuery = `query($owner: String!, $name: String!, $after: String) {
     pullRequests(states: OPEN, first: 25, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        id number title isDraft headRefOid mergeable reviewDecision isInMergeQueue authorAssociation
+        id number title createdAt isDraft headRefOid mergeable reviewDecision isInMergeQueue authorAssociation
         author { __typename login }
         labels(first: 30) { nodes { name } }
         autoMergeRequest { enabledAt }
@@ -279,8 +383,8 @@ const pullsQuery = `query($owner: String!, $name: String!, $after: String) {
         timelineItems(last: 3, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
           nodes { ... on RemovedFromMergeQueueEvent { createdAt reason } }
         }
-        labeled: timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {
-          nodes { ... on LabeledEvent { createdAt label { name } actor { __typename login } } }
+        events: timelineItems(last: 20, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {
+          nodes { __typename ... on LabeledEvent { createdAt label { name } actor { __typename login } } ... on ReadyForReviewEvent { createdAt } }
         }
       }
     }
@@ -365,6 +469,25 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 		}
 		after = p.EndCursor
 	}
+	// The pull requests that close an issue whose label merge-first
+	// counts, with the oldest such issue of each.
+	closes := map[int]firstIssue{}
+	if slices.ContainsFunc(items, func(it Item) bool { return slices.Contains(it.Labels, mergeFirst) }) {
+		issues, err := firstIssues(ctx, g, c)
+		if err != nil {
+			return nil, err
+		}
+		for _, fi := range issues {
+			if i := slices.IndexFunc(items, func(it Item) bool { return it.Number == fi.Number }); i >= 0 {
+				items[i].FirstSince = fi.Since
+			}
+			for _, pr := range fi.PRs {
+				if _, ok := closes[pr]; !ok {
+					closes[pr] = fi
+				}
+			}
+		}
+	}
 	for after := ""; ; {
 		var r struct {
 			Repository struct {
@@ -374,6 +497,7 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 						ID                string    `json:"id"`
 						Number            int       `json:"number"`
 						Title             string    `json:"title"`
+						CreatedAt         time.Time `json:"createdAt"`
 						IsDraft           bool      `json:"isDraft"`
 						HeadRefOid        string    `json:"headRefOid"`
 						Mergeable         string    `json:"mergeable"`
@@ -399,9 +523,9 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 						TimelineItems struct {
 							Nodes []removal `json:"nodes"`
 						} `json:"timelineItems"`
-						Labeled struct {
-							Nodes []labeled `json:"nodes"`
-						} `json:"labeled"`
+						Events struct {
+							Nodes []event `json:"nodes"`
+						} `json:"events"`
 					} `json:"nodes"`
 				} `json:"pullRequests"`
 			} `json:"repository"`
@@ -434,7 +558,20 @@ func survey(ctx context.Context, g *github, c *Config) ([]Item, error) {
 				}
 			}
 			it.Removals = removals(n.TimelineItems.Nodes, it.ReviewedAt, headAt, time.Now())
-			it.FirstSince = firstSince(it.Labels, n.Labeled.Nodes, c)
+			// It merges first since a maintainer labelled it, or since it
+			// closes a labelled issue and is ready for review, whichever
+			// came later.
+			it.FirstSince = firstSince(it.Labels, n.Events.Nodes, c, false)
+			if fi, ok := closes[it.Number]; ok {
+				it.FirstIssue = fi.Number
+				since := fi.Since
+				if at := ready(n.CreatedAt, n.Events.Nodes); at.After(since) {
+					since = at
+				}
+				if since.After(it.FirstSince) {
+					it.FirstSince = since
+				}
+			}
 			items = append(items, it)
 		}
 		p := r.Repository.PullRequests.PageInfo
