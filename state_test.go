@@ -72,8 +72,103 @@ func TestNext(t *testing.T) {
 		{"person's PR, changes requested", Item{PR: true, Checks: "SUCCESS", Review: "CHANGES_REQUESTED"}, ""},
 		{"person's PR, approved", Item{PR: true, Checks: "SUCCESS", Review: "APPROVED"}, ""},
 	} {
-		if got, why := next(tc.it, c); got != tc.want {
+		if got, why := next(tc.it, c, 0); got != tc.want {
 			t.Errorf("%s: got %q (%s), want %q", tc.name, got, why, tc.want)
+		}
+	}
+}
+
+// TestNextMergeFirst checks what waits while pull request 7 merges first:
+// only the auto-merge of the others.
+func TestNextMergeFirst(t *testing.T) {
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]"}
+	pr := func(number int, it Item) Item {
+		it.PR, it.Ours, it.Number, it.Checks = true, true, number, "SUCCESS"
+		return it
+	}
+	for _, tc := range []struct {
+		name string
+		it   Item
+		want string
+	}{
+		{"it is approved", pr(7, Item{Review: "APPROVED"}), autoMerge},
+		{"it left the queue once", pr(7, Item{Review: "APPROVED", Removals: 1}), autoMerge},
+		{"another is approved", pr(8, Item{Review: "APPROVED"}), ""},
+		{"another left the queue once", pr(8, Item{Review: "APPROVED", Removals: 1}), ""},
+		{"another left the queue twice", pr(8, Item{Review: "APPROVED", Removals: 2}), "fix"},
+		{"another's approval does not count", pr(8, Item{Review: "APPROVED", Decision: "REVIEW_REQUIRED"}), park},
+		{"another is not reviewed", pr(8, Item{}), "review"},
+		{"another has a conflict", pr(8, Item{Conflict: true}), "fix"},
+		{"an issue", Item{Number: 9}, "work"},
+	} {
+		if got, why := next(tc.it, c, 7); got != tc.want {
+			t.Errorf("%s: got %q (%s), want %q", tc.name, got, why, tc.want)
+		}
+	}
+}
+
+func TestFirst(t *testing.T) {
+	c := &Config{MergeFirstLimit: duration{4 * time.Hour}}
+	now := time.Date(2026, 11, 24, 20, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+	held := Item{Number: 7, PR: true, Labels: []string{mergeFirst}, FirstSince: since}
+	with := func(f func(*Item)) Item {
+		it := held
+		f(&it)
+		return it
+	}
+	for _, tc := range []struct {
+		name  string
+		items []Item
+		want  int
+	}{
+		{"none", []Item{{Number: 1}, {Number: 2, PR: true}}, 0},
+		{"labelled", []Item{{Number: 1}, {Number: 2, PR: true}, held}, 7},
+		{"the label does not count", []Item{with(func(it *Item) { it.FirstSince = time.Time{} })}, 0},
+		{"labelled too long ago", []Item{with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) })}, 0},
+		{"draft", []Item{with(func(it *Item) { it.Draft = true })}, 0},
+		{"parked", []Item{with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} })}, 0},
+		{"from outside", []Item{with(func(it *Item) { it.Outside = true })}, 0},
+		{"two: the older", []Item{held, with(func(it *Item) { it.Number = 9 })}, 7},
+		{"two: the older is a draft", []Item{with(func(it *Item) { it.Draft = true }), with(func(it *Item) { it.Number = 9 })}, 9},
+	} {
+		if got := first(tc.items, c, now); got != tc.want {
+			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestFirstSince(t *testing.T) {
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}, Apps: []string{"github-actions[bot]"}}
+	t0 := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC)
+	add := func(name string, a *actor, d time.Duration) labeled {
+		l := labeled{CreatedAt: t0.Add(d), Actor: a}
+		l.Label.Name = name
+		return l
+	}
+	maint, agent := &actor{"User", "Maint"}, &actor{"Bot", "fc-agent"}
+	has := []string{"other", mergeFirst}
+	for _, tc := range []struct {
+		name   string
+		labels []string
+		added  []labeled
+		want   time.Time
+	}{
+		{"not labelled", []string{"other"}, []labeled{add("other", maint, 0)}, time.Time{}},
+		{"label removed again", []string{"other"}, []labeled{add(mergeFirst, maint, 0)}, time.Time{}},
+		{"by a maintainer", has, []labeled{add(mergeFirst, maint, 0), add("other", agent, time.Hour)}, t0},
+		{"by a listed App", has, []labeled{add(mergeFirst, &actor{"Bot", "github-actions"}, 0)}, t0},
+		{"by the agent App", has, []labeled{add(mergeFirst, agent, 0)}, time.Time{}},
+		{"by the reviewer App", has, []labeled{add(mergeFirst, &actor{"Bot", "fc-reviewer"}, 0)}, time.Time{}},
+		{"by a person outside the config", has, []labeled{add(mergeFirst, &actor{"User", "mallory"}, 0)}, time.Time{}},
+		{"by an App with a maintainer's name", has, []labeled{add(mergeFirst, &actor{"Bot", "maint"}, 0)}, time.Time{}},
+		{"by a deleted account", has, []labeled{add(mergeFirst, nil, 0)}, time.Time{}},
+		{"added again by a maintainer", has, []labeled{add(mergeFirst, agent, 0), add(mergeFirst, maint, time.Hour)}, t0.Add(time.Hour)},
+		{"added again by an agent", has, []labeled{add(mergeFirst, maint, 0), add(mergeFirst, agent, time.Hour)}, time.Time{}},
+		{"its adding is not among the latest", has, []labeled{add("other", maint, 0)}, time.Time{}},
+	} {
+		if got := firstSince(tc.labels, tc.added, c); !got.Equal(tc.want) {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -97,6 +192,32 @@ func TestCandidates(t *testing.T) {
 	want := []string{"fix 5", "review 4", "continue 3", "continue 6", "triage 2", "work 1"}
 	if !slices.Equal(got, want) {
 		t.Errorf("candidates %v, want %v", got, want)
+	}
+
+	// The jobs of the pull request that merges first come before all
+	// others, and no other pull request gets auto-merge.
+	c = &Config{MergeFirstLimit: duration{4 * time.Hour}}
+	items = append(items,
+		Item{Number: 7, PR: true, Ours: true, Checks: "SUCCESS", Review: "APPROVED"},
+		Item{Number: 8, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-time.Hour)},
+		Item{Number: 9, PR: true, Ours: true, Checks: "SUCCESS", Review: "APPROVED", Decision: "REVIEW_REQUIRED"},
+	)
+	got = nil
+	for _, cand := range candidates(items, c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
+	want = []string{"review 8", "park 9", "fix 5", "review 4", "continue 3", "continue 6", "triage 2", "work 1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates with a pull request that merges first %v, want %v", got, want)
+	}
+	items[len(items)-2].FirstSince = time.Now().Add(-5 * time.Hour)
+	got = nil
+	for _, cand := range candidates(items, c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
+	want = []string{"park 9", "auto-merge 7", "fix 5", "review 4", "review 8", "continue 3", "continue 6", "triage 2", "work 1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates after merge_first_limit %v, want %v", got, want)
 	}
 }
 

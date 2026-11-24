@@ -34,15 +34,23 @@ func (c candidate) key() string {
 }
 
 // candidates returns the items that need a job, in the order in which to
-// pick them: by job, then oldest first.
+// pick them: the pull request that merges first, if there is one, then by
+// job, then oldest first.
 func candidates(items []Item, c *Config) []candidate {
+	f := first(items, c, time.Now())
 	var out []candidate
 	for _, it := range items {
-		if job, why := next(it, c); job != "" {
+		if job, why := next(it, c, f); job != "" {
 			out = append(out, candidate{it, job, why})
 		}
 	}
 	slices.SortStableFunc(out, func(a, b candidate) int {
+		if af, bf := a.Number == f, b.Number == f; af != bf {
+			if af {
+				return -1
+			}
+			return 1
+		}
 		return slices.Index(order, a.job) - slices.Index(order, b.job)
 	})
 	return out
@@ -347,9 +355,10 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 	}
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ITEM\tNEXT\tWHY\tCLAIMED BY\tTITLE")
+	f := first(items, w.c, time.Now())
 	for _, it := range items {
 		cand := candidate{Item: it}
-		cand.job, cand.why = next(it, w.c)
+		cand.job, cand.why = next(it, w.c, f)
 		if cand.job == "" {
 			cand.job = "-"
 		}

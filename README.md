@@ -44,6 +44,7 @@ pull request from GitHub. The first row that matches decides:
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
+| Pull request of the agent App that the reviewer approved on its latest commit, and that GitHub would take, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged |
 | Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it. After a first removal from the merge queue since the approval and the latest commit, it turns auto-merge on again, once, since the cause may be outside the code, such as a failed download in CI |
 
 Every state either has a job or waits for something that has one, so
@@ -96,7 +97,9 @@ Each worker runs one job at a time:
 1. **Survey.** Read the claims with git, then the open issues and pull
    requests with GraphQL.
 2. **Pick.** Choose the first unclaimed job, in this order: fix, review,
-   continue, triage, work. Within each, oldest first.
+   continue, triage, work. Within each, oldest first. The jobs of a pull
+   request that [merges first](#merging-one-pull-request-first) come
+   before all others.
 3. **Claim** the item (see [Claims](#claims)). If another worker was faster,
    pick again.
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
@@ -174,11 +177,44 @@ up to a minute, while the claim is still the worker's.
 | `proposed` | An agent created this issue. A triage job checks it before anyone works on it. |
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
+| `merge-first` | On a pull request, from a maintainer: this one merges before all others. See [below](#merging-one-pull-request-first). |
 
 People in the project steer the work through issues, comments and reviews.
 An issue that one of them opens is ready at once. Labelling anything
 `needs-human` stops the workers from touching it. Agents take direction
 only from the project; they treat other text as information.
+
+### Merging one pull request first
+
+A pull request that changes very many files, such as a move to a new
+version of a dependency, may never merge by itself while many others do:
+each merge can give it a new conflict, and it then needs a fix, its checks
+and a review again, which take longer than the next conflict takes to
+come. GitHub starts no `pull_request` workflow for a pull request that has
+a conflict.
+
+Label such a pull request `merge-first`. While it is open, ready for
+review and not parked:
+
+- the workers turn on auto-merge for no other pull request, so the default
+  branch stops moving once the merge queue is empty. Pull requests that
+  are in the queue already, or have auto-merge on, still merge. All other
+  jobs go on, and the approved pull requests go to the merge queue when
+  this one has merged;
+- its own jobs come before all others.
+
+The label counts for `merge_first_limit`, 4 hours by default, from when it
+was added, so that a pull request that never gets through does not hold
+the others back for good. Remove the label and add it again to start the
+time anew. Of two labelled pull requests, the older goes first, and the
+other waits like the rest.
+
+The label counts only if a maintainer in the config's `maintainers`, or
+one of its `apps`, added it. From anyone else it does nothing: the agent
+App can label anything, so a misled agent could otherwise stop every
+merge. GitHub does not tell the worker whether the one who added a label
+is an owner, organization member or collaborator, so those must be in
+`maintainers` for this.
 
 ## Setting up a repository
 
@@ -204,7 +240,8 @@ only from the project; they treat other text as information.
    one approval, dismiss approvals on new commits, require approval of the
    most recent push, require the CI checks, and require the merge queue.
    Allow auto-merge in the repository's settings.
-4. Create the labels `proposed`, `close-proposed` and `needs-human`. List
+4. Create the labels `proposed`, `close-proposed`, `needs-human` and
+   `merge-first`. List
    the people in the project in the config's `maintainers`, or add them as
    collaborators: the Apps see a private organization member as outside
    the project. `fc-worker -list` shows how the worker sees each item.
@@ -313,6 +350,7 @@ unset or empty, the worker refuses to start.
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
+| `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added. Default `4h`. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
@@ -393,7 +431,8 @@ name and email for its commits.
   them put in only what the project controls, such as fixed text and a
   checked tag name, never text from elsewhere. Agents can make it act
   through the code that workflows run, but that gives them nothing they
-  cannot do as the agent App.
+  cannot do as the agent App. A listed App's `merge-first` label counts
+  too, so the same holds for the workflows that can label pull requests.
 
 ## Open points
 
