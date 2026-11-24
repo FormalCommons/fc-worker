@@ -370,13 +370,19 @@ was. Each pair is GitHub's, then the desk's. `differ` lists the items for
 which the two give something different: `fields` holds the fields that
 differ, `jobs` the job the item needs next according to each, and `updated`
 when GitHub said the item last changed. An item that only one of them has
-carries `"only": "github"` or `"only": "desk"`. What changed on GitHub
-between `as_of` and `at` differs without a fault of the desk. A difference
-that lasts from one run to the next is one to look at, and so is an issue
-that differs while its two `updated` are equal. A pull request's checks,
-conflicts and place in the merge queue change without a new `updated`.
+carries `"only": "github"` or `"only": "desk"`, and an item with two
+different `jobs` is listed also when no field of its own differs. What
+changed on GitHub between `as_of` and the end of GitHub's answer, some
+seconds after `at`, differs without a fault of the desk. A difference that
+lasts from one run to the next is one to look at, and so is an issue whose
+title, labels or author differ while its two `updated` are equal. The rest
+changes without a new `updated`: a pull request's checks, conflicts and
+place in the merge queue, and for an issue the states of its blockers,
+sub-issues and closing pull requests and who labelled it.
 
-It reads no claims, writes nothing, and costs what a survey costs.
+It reads no claims and writes nothing. It costs what a survey costs, and
+one point more if an open pull request closes an issue labelled
+`merge-first`: who labelled the issue is then asked once for each side.
 
 ### Configuration
 

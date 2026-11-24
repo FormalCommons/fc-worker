@@ -38,10 +38,13 @@ func main() {
 	defer stop()
 	if *compare {
 		// Before anything touches the claims: comparing reads none.
+		if *list {
+			log.Fatal("-list and -compare do not go together")
+		}
 		if c.Desk == nil {
 			log.Fatal("-compare: the config names no desk")
 		}
-		cmp, err := w.compare(ctx)
+		cmp, err := w.compare(ctx, time.Now())
 		if err != nil {
 			log.Fatal(err)
 		}

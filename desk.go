@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,7 @@ func newDesk(c *Config) *desk {
 // APPROVED are GitHub's own.
 type (
 	deskSurvey struct {
+		Repo   string      `json:"repo"`
 		AsOf   time.Time   `json:"as_of"`
 		Issues []deskIssue `json:"issues"`
 		Pulls  []deskPull  `json:"pulls"`
@@ -145,11 +147,19 @@ func (d *desk) facts(ctx context.Context) (*facts, error) {
 		return nil, fmt.Errorf("desk: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("desk: %s", resp.Status)
+		// The desk says why in a line of text.
+		why, _, _ := strings.Cut(strings.TrimSpace(string(data[:min(len(data), 200)])), "\n")
+		if why == "" {
+			return nil, fmt.Errorf("desk: %s", resp.Status)
+		}
+		return nil, fmt.Errorf("desk: %s: %s", resp.Status, why)
 	}
 	var v deskSurvey
 	if err := json.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("desk: %w", err)
+	}
+	if !strings.EqualFold(v.Repo, d.repo) {
+		return nil, fmt.Errorf("desk: the answer is for %q, not for %s", v.Repo, d.repo)
 	}
 	if v.AsOf.IsZero() {
 		return nil, errors.New("desk: the answer does not say how old it is")
@@ -157,9 +167,13 @@ func (d *desk) facts(ctx context.Context) (*facts, error) {
 	return v.facts(), nil
 }
 
-// facts returns a desk's answer in the form of GitHub's.
+// facts returns a desk's answer in the form of GitHub's, and in GitHub's
+// order, the oldest first: items depends on the order of the issues, and
+// an issue's number can be out of the order of its opening.
 func (v *deskSurvey) facts() *facts {
 	f := &facts{AsOf: v.AsOf}
+	slices.SortStableFunc(v.Issues, func(a, b deskIssue) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	slices.SortStableFunc(v.Pulls, func(a, b deskPull) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	for _, it := range v.Issues {
 		n := issueNode{
 			ID: it.ID, Number: it.Number, Title: it.Title, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
@@ -200,7 +214,12 @@ func (v *deskSurvey) facts() *facts {
 			n.TimelineItems.Nodes = append(n.TimelineItems.Nodes, removal{CreatedAt: r.At, Reason: r.Reason})
 		}
 		for _, e := range it.Events {
+			// A type that this worker does not know is left out: with
+			// a label's name, it would pass for the adding of the label.
 			ev := event{Typename: eventTypenames[e.Type], CreatedAt: e.At, Actor: e.Actor.actor()}
+			if ev.Typename == "" {
+				continue
+			}
 			ev.Label.Name = e.Label
 			n.Events.Nodes = append(n.Events.Nodes, ev)
 		}
@@ -214,7 +233,7 @@ func (v *deskSurvey) facts() *facts {
 type comparison struct {
 	// At is when GitHub was asked, and AsOf how old the desk's answer
 	// said it was. The desk was asked first, so everything that changed
-	// on GitHub between the two can differ.
+	// on GitHub between AsOf and the end of GitHub's answer can differ.
 	At     time.Time    `json:"at"`
 	AsOf   time.Time    `json:"as_of"`
 	GitHub counts       `json:"github"`
@@ -243,8 +262,9 @@ type difference struct {
 }
 
 // compare surveys the repository from GitHub and from the desk and returns
-// what differs. It reads no claims and changes nothing.
-func (w *worker) compare(ctx context.Context) (*comparison, error) {
+// what differs, with the items of both worked out as of now. It reads no
+// claims and changes nothing.
+func (w *worker) compare(ctx context.Context, now time.Time) (*comparison, error) {
 	fd, err := newDesk(w.c).facts(ctx)
 	if err != nil {
 		return nil, err
@@ -253,7 +273,6 @@ func (w *worker) compare(ctx context.Context) (*comparison, error) {
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	var sides [2]map[string]Item
 	var jobs [2]map[string]string
 	var updated [2]map[string]time.Time
@@ -277,7 +296,7 @@ func (w *worker) compare(ctx context.Context) (*comparison, error) {
 		}
 	}
 	cmp := &comparison{
-		At: fg.AsOf, AsOf: fd.AsOf, Differ: []difference{},
+		At: fg.AsOf.UTC().Truncate(time.Second), AsOf: fd.AsOf, Differ: []difference{},
 		GitHub: counts{len(fg.Issues), len(fg.Pulls)}, Desk: counts{len(fd.Issues), len(fd.Pulls)},
 	}
 	var keys []string
@@ -299,7 +318,9 @@ func (w *worker) compare(ctx context.Context) (*comparison, error) {
 		case !onGitHub:
 			diff.Only = "desk"
 		default:
-			if diff.Fields = differing(g, d); len(diff.Fields) == 0 {
+			// Equal fields can still give two jobs: which item merges
+			// first depends on the others.
+			if diff.Fields = differing(g, d); len(diff.Fields) == 0 && diff.Jobs[0] == diff.Jobs[1] {
 				continue
 			}
 		}
@@ -341,6 +362,9 @@ func differing(a, b Item) map[string][2]any {
 	fields := map[string][2]any{}
 	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
 	for i := range va.NumField() {
+		if !va.Type().Field(i).IsExported() {
+			continue
+		}
 		x, y := va.Field(i).Interface(), vb.Field(i).Interface()
 		if tx, ok := x.(time.Time); ok {
 			if tx.Equal(y.(time.Time)) {
