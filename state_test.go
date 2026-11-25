@@ -23,6 +23,9 @@ func TestNext(t *testing.T) {
 		}
 		return it
 	}
+	// since is when a label merge-first began to count, or when the
+	// reviewer first approved a commit.
+	since := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name string
 		it   Item
@@ -51,6 +54,18 @@ func TestNext(t *testing.T) {
 		{"a person requested changes", ours(Item{Requested: true, Review: "APPROVED"}), "fix"},
 		{"person's PR, a person requested changes", Item{PR: true, Checks: "SUCCESS", Requested: true}, ""},
 		{"conflict after approval", ours(Item{Conflict: true, Review: "APPROVED"}), "fix"},
+		{"conflict, approved on an earlier commit", ours(Item{Conflict: true, ApprovedSince: since}), "fix"},
+		{"label counts, conflict, not reviewed", ours(Item{Conflict: true, FirstSince: since}), "review"},
+		{"label counts, conflict, checks running", ours(Item{Conflict: true, FirstSince: since, Checks: "PENDING"}), "fix"},
+		{"label counts, conflict, no checks", Item{PR: true, Ours: true, Conflict: true, FirstSince: since}, "fix"},
+		{"label counts, conflict, checks failed", ours(Item{Conflict: true, FirstSince: since, Checks: "FAILURE"}), "fix"},
+		{"label counts, conflict, changes requested", ours(Item{Conflict: true, FirstSince: since, Review: "CHANGES_REQUESTED"}), "fix"},
+		{"label counts, conflict, a person requested changes", ours(Item{Conflict: true, FirstSince: since, Requested: true}), "fix"},
+		{"label counts, conflict, approved on an earlier commit", ours(Item{Conflict: true, FirstSince: since, ApprovedSince: since}), "fix"},
+		{"label counts, conflict, approved", ours(Item{Conflict: true, FirstSince: since, ApprovedSince: since, Review: "APPROVED"}), "fix"},
+		{"label counts, conflict, a draft", Item{PR: true, Draft: true, Ours: true, Conflict: true, FirstSince: since, Checks: "SUCCESS"}, "continue"},
+		{"label counts, conflict, parked", ours(Item{Conflict: true, FirstSince: since, Labels: []string{"needs-human"}}), ""},
+		{"behind, but it does not merge first", ours(Item{Review: "APPROVED", Behind: 3}), autoMerge},
 		{"removed from queue once", ours(Item{Review: "APPROVED", Removals: 1}), autoMerge},
 		{"removed once, back in the queue", ours(Item{Review: "APPROVED", Removals: 1, Queued: true}), ""},
 		{"removed once, auto-merge on", ours(Item{Review: "APPROVED", Removals: 1, AutoMerge: true}), ""},
@@ -74,6 +89,8 @@ func TestNext(t *testing.T) {
 
 		{"person's PR, not reviewed", Item{PR: true, Checks: "SUCCESS"}, "review"},
 		{"person's PR, conflict", Item{PR: true, Conflict: true}, ""},
+		{"person's PR, label counts, conflict, not reviewed", Item{PR: true, Checks: "SUCCESS", Conflict: true, FirstSince: since}, "review"},
+		{"person's PR, label counts, conflict, changes requested", Item{PR: true, Checks: "SUCCESS", Conflict: true, FirstSince: since, Review: "CHANGES_REQUESTED"}, ""},
 		{"person's PR, changes requested", Item{PR: true, Checks: "SUCCESS", Review: "CHANGES_REQUESTED"}, ""},
 		{"person's PR, approved", Item{PR: true, Checks: "SUCCESS", Review: "APPROVED"}, ""},
 	} {
@@ -84,7 +101,8 @@ func TestNext(t *testing.T) {
 }
 
 // TestNextMergeFirst checks what waits while pull request 7 merges first:
-// only the auto-merge of the others.
+// only the auto-merge of the others, and its own if the base branch has
+// commits that it lacks.
 func TestNextMergeFirst(t *testing.T) {
 	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]"}
 	pr := func(number int, it Item) Item {
@@ -92,6 +110,9 @@ func TestNextMergeFirst(t *testing.T) {
 		return it
 	}
 	const waits = "approved; waiting until #7, which merges first, has merged"
+	const lacks = "approved, and the others now wait for it to merge, but the base branch has "
+	person := pr(7, Item{Review: "APPROVED", Behind: 83})
+	person.Ours = false
 	for _, tc := range []struct {
 		name string
 		it   Item
@@ -100,6 +121,14 @@ func TestNextMergeFirst(t *testing.T) {
 	}{
 		{"it is approved", pr(7, Item{Review: "APPROVED"}), autoMerge, "approved"},
 		{"it left the queue once", pr(7, Item{Review: "APPROVED", Removals: 1}), autoMerge, ""},
+		{"it is behind", pr(7, Item{Review: "APPROVED", Behind: 83}), "fix", lacks + "83 commits that it lacks"},
+		{"it is one commit behind", pr(7, Item{Review: "APPROVED", Behind: 1}), "fix", lacks + "1 commit that it lacks"},
+		{"it is behind and left the queue once", pr(7, Item{Review: "APPROVED", Behind: 83, Removals: 1}), "fix", lacks + "83 commits that it lacks"},
+		{"it is behind, in the queue", pr(7, Item{Review: "APPROVED", Behind: 83, Queued: true}), "", "approved, waiting for the merge queue"},
+		{"it is behind, auto-merge on", pr(7, Item{Review: "APPROVED", Behind: 83, AutoMerge: true}), "", "approved, waiting for the merge queue"},
+		{"it is behind, its approval does not count", pr(7, Item{Review: "APPROVED", Behind: 83, Decision: "REVIEW_REQUIRED"}), park, ""},
+		{"it is behind, a person's", person, "", "approved; its author decides when to merge"},
+		{"another is behind", pr(8, Item{Review: "APPROVED", Behind: 83}), "", waits},
 		{"another is approved", pr(8, Item{Review: "APPROVED"}), "", waits},
 		{"another left the queue once", pr(8, Item{Review: "APPROVED", Removals: 1}), "", waits},
 		{"another left the queue twice", pr(8, Item{Review: "APPROVED", Removals: 2}), "fix", ""},
@@ -119,9 +148,10 @@ func TestNextMergeFirst(t *testing.T) {
 func TestFirst(t *testing.T) {
 	c := &Config{MergeFirstLimit: duration{4 * time.Hour}}
 	now := time.Date(2026, 11, 24, 20, 0, 0, 0, time.UTC)
-	since := now.Add(-time.Hour)
-	held := Item{Number: 7, PR: true, Labels: []string{mergeFirst}, FirstSince: since}
-	closes := Item{Number: 7, PR: true, FirstIssue: 5, FirstSince: since}
+	// Labelled an hour ago, and approved half an hour ago.
+	since, approved := now.Add(-time.Hour), now.Add(-30*time.Minute)
+	held := Item{Number: 7, PR: true, Labels: []string{mergeFirst}, FirstSince: since, ApprovedSince: approved}
+	closes := Item{Number: 7, PR: true, FirstIssue: 5, FirstSince: since, ApprovedSince: approved}
 	with := func(f func(*Item)) Item {
 		it := held
 		f(&it)
@@ -133,17 +163,26 @@ func TestFirst(t *testing.T) {
 		want  int
 	}{
 		{"none", []Item{{Number: 1}, {Number: 2, PR: true}}, 0},
-		{"labelled", []Item{{Number: 1}, {Number: 2, PR: true}, held}, 7},
-		{"the label does not count", []Item{with(func(it *Item) { it.FirstSince = time.Time{} })}, 0},
-		{"labelled too long ago", []Item{with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) })}, 0},
+		{"labelled and approved", []Item{{Number: 1}, {Number: 2, PR: true}, held}, 7},
+		{"labelled, not approved yet", []Item{with(func(it *Item) { it.ApprovedSince = time.Time{} })}, 0},
+		{"approved, the label does not count", []Item{with(func(it *Item) { it.FirstSince = time.Time{} })}, 0},
+		{"approved before it was labelled", []Item{with(func(it *Item) { it.ApprovedSince = now.Add(-5 * time.Hour) })}, 7},
+		{"labelled long before it was approved", []Item{with(func(it *Item) { it.FirstSince = now.Add(-5 * time.Hour) })}, 7},
+		{"labelled and approved too long ago", []Item{with(func(it *Item) { it.FirstSince, it.ApprovedSince = now.Add(-5*time.Hour), now.Add(-4*time.Hour) })}, 0},
+		{"approved and labelled too long ago", []Item{with(func(it *Item) { it.FirstSince, it.ApprovedSince = now.Add(-4*time.Hour), now.Add(-5*time.Hour) })}, 0},
+		{"approved a second less than the limit ago", []Item{with(func(it *Item) {
+			it.FirstSince, it.ApprovedSince = now.Add(-5*time.Hour), now.Add(time.Second-4*time.Hour)
+		})}, 7},
 		{"draft", []Item{with(func(it *Item) { it.Draft = true })}, 0},
 		{"parked", []Item{with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} })}, 0},
 		{"from outside", []Item{with(func(it *Item) { it.Outside = true })}, 0},
 		{"two: the older", []Item{held, with(func(it *Item) { it.Number = 9 })}, 7},
 		{"two: the older is a draft", []Item{with(func(it *Item) { it.Draft = true }), with(func(it *Item) { it.Number = 9 })}, 9},
+		{"two: the older is not approved yet", []Item{with(func(it *Item) { it.ApprovedSince = time.Time{} }), with(func(it *Item) { it.Number = 9 })}, 9},
 		{"an issue whose label counts", []Item{{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}}, 0},
 		{"it closes a labelled issue", []Item{{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, closes}, 7},
 		{"it closes a labelled issue, as a draft", []Item{with(func(it *Item) { *it = closes; it.Draft = true })}, 0},
+		{"it closes a labelled issue, not approved yet", []Item{with(func(it *Item) { *it = closes; it.ApprovedSince = time.Time{} })}, 0},
 	} {
 		if got := first(tc.items, c, now); got != tc.want {
 			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
@@ -159,10 +198,15 @@ func TestFirst(t *testing.T) {
 	}{
 		{"an issue", Item{Number: 1}, 7, ""},
 		{"not labelled", Item{Number: 2, PR: true}, 7, ""},
-		{"it merges first", held, 7, "merges first until 23:00 UTC"},
+		{"it merges first", held, 7, "merges first until 23:30 UTC"},
+		{"approved before it was labelled", with(func(it *Item) { it.ApprovedSince = now.Add(-5 * time.Hour) }), 7, "merges first until 23:00 UTC"},
+		{"not approved yet", with(func(it *Item) { it.ApprovedSince = time.Time{} }), 0, "labelled merge-first: it holds nothing back until the reviewer has approved it, but its jobs come before the others"},
+		{"not approved yet, another merges first", with(func(it *Item) { it.ApprovedSince = time.Time{} }), 9, "labelled merge-first: it holds nothing back until the reviewer has approved it, but its jobs come before the others"},
+		{"not approved, labelled three days ago", with(func(it *Item) { it.FirstSince, it.ApprovedSince = now.Add(-firstIssueSpan), time.Time{} }), 0, "labelled merge-first: it holds nothing back until the reviewer has approved it; its jobs came before the others until 20:00 UTC on 24 November"},
 		{"another goes before it", with(func(it *Item) { it.Number = 9 }), 7, "labelled merge-first; #7 goes before it"},
 		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 events came since"},
-		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC on 24 November"},
+		{"labelled and approved too long ago", with(func(it *Item) { it.FirstSince, it.ApprovedSince = now.Add(-5*time.Hour), now.Add(-4*time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC on 24 November"},
+		{"approved and labelled too long ago", with(func(it *Item) { it.FirstSince, it.ApprovedSince = now.Add(-4*time.Hour), now.Add(-5*time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC on 24 November"},
 		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
 		{"the agent's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft, it.Ours, it.IssueSince = true, true, since }), 0, "closes an issue labelled merge-first: a draft holds nothing back, but its jobs come before the others"},
 		{"the agent's parked draft that closes a labelled issue", with(func(it *Item) {
@@ -174,14 +218,18 @@ func TestFirst(t *testing.T) {
 		{"another's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft, it.IssueSince = true, since }), 0, "closes #5, labelled merge-first, which does not count: a draft"},
 		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
 		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
-		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first, which counts until 19:00 UTC on 27 November: a job of its own comes before the others, and a pull request that closes it and is ready for review before then merges first"},
+		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first, which counts until 19:00 UTC on 27 November: a job of its own comes before the others, and a pull request that closes it and is ready for review before then merges first once the reviewer has approved it"},
 		{"an issue whose label counted", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: now.Add(-firstIssueSpan)}, 7, "labelled merge-first, which counted until 20:00 UTC on 24 November: a pull request that closes it merges first only if it was ready for review before then"},
 		{"an issue whose label does not count", Item{Number: 5, Labels: []string{mergeFirst}}, 0, "labelled merge-first: the label does not count, or the issue needs no job and no open pull request closes it, or more than ten such issues come before it"},
 		{"it closes a labelled issue, ready too late", with(func(it *Item) { *it = closes; it.FirstSince = time.Time{} }), 0, "closes #5, labelled merge-first, which does not count: it was ready for review three days or more after the issue got the label"},
 		{"it closes a labelled issue, with a label of its own", with(func(it *Item) { it.FirstIssue = 5; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
-		{"it closes a labelled issue", closes, 7, "merges first until 23:00 UTC"},
+		{"it closes a labelled issue", closes, 7, "merges first until 23:30 UTC"},
+		{"it closes a labelled issue, not approved yet", with(func(it *Item) { *it = closes; it.ApprovedSince = time.Time{} }), 0, "closes #5, labelled merge-first: it holds nothing back until the reviewer has approved it, but its jobs come before the others"},
 		{"it closes a labelled issue, as a draft", with(func(it *Item) { *it = closes; it.Draft = true }), 0, "closes #5, labelled merge-first, which does not count: a draft"},
-		{"it closes a labelled issue, too long ago", with(func(it *Item) { *it = closes; it.FirstSince = now.Add(-5 * time.Hour) }), 0, "closes #5, labelled merge-first, which counted until 19:00 UTC on 24 November"},
+		{"it closes a labelled issue, too long ago", with(func(it *Item) {
+			*it = closes
+			it.FirstSince, it.ApprovedSince = now.Add(-5*time.Hour), now.Add(-6*time.Hour)
+		}), 0, "closes #5, labelled merge-first, which counted until 19:00 UTC on 24 November"},
 		{"it closes a labelled issue, another goes before it", with(func(it *Item) { *it = closes; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 	} {
 		if got := firstNote(tc.it, tc.f, c, now); got != tc.want {
@@ -208,7 +256,16 @@ func TestLeads(t *testing.T) {
 		{"the same, with a label of its own since", Item{PR: true, Draft: true, Ours: true, FirstIssue: 5, IssueSince: edge, FirstSince: now}, false},
 		{"the agent's draft with a label of its own", Item{PR: true, Draft: true, Ours: true, FirstSince: now}, false},
 		{"another's draft that closes a labelled issue", Item{PR: true, Draft: true, FirstIssue: 5, IssueSince: now}, false},
-		{"the agent's pull request, ready, that closes a labelled issue", Item{PR: true, Ours: true, FirstIssue: 5, IssueSince: now, FirstSince: now}, false},
+		{"the agent's pull request, ready, that closes a labelled issue", Item{PR: true, Ours: true, FirstIssue: 5, IssueSince: now, FirstSince: now}, true},
+		{"the same, ready too late for the label to count", Item{PR: true, Ours: true, FirstIssue: 5, IssueSince: now}, false},
+		{"the same, approved", Item{PR: true, Ours: true, FirstIssue: 5, IssueSince: now, FirstSince: now, ApprovedSince: now}, false},
+		{"a pull request whose label counts", Item{PR: true, Ours: true, FirstSince: now}, true},
+		{"a person's pull request whose label counts", Item{PR: true, FirstSince: now}, true},
+		{"a pull request whose label counts, approved", Item{PR: true, Ours: true, FirstSince: now, ApprovedSince: now}, false},
+		{"a pull request approved before its label counted", Item{PR: true, Ours: true, FirstSince: now, ApprovedSince: edge}, false},
+		{"a pull request labelled a second less than three days ago", Item{PR: true, Ours: true, FirstSince: edge.Add(time.Second)}, true},
+		{"a pull request labelled three days ago", Item{PR: true, Ours: true, FirstSince: edge}, false},
+		{"a pull request without a label, approved or not", Item{PR: true, Ours: true}, false},
 	} {
 		if got := leads(tc.it, now); got != tc.want {
 			t.Errorf("%s: leads %v, want %v", tc.name, got, tc.want)
@@ -456,6 +513,157 @@ func TestSurveyMergeFirst(t *testing.T) {
 	}
 }
 
+// TestSurveyBehind checks that survey asks GitHub how far the pull request
+// that merges first is behind its base branch only when that decides its
+// job: when it would get auto-merge on a commit made before it began to
+// hold the others back.
+func TestSurveyBehind(t *testing.T) {
+	// Pull request 7, the agent's, was labelled by a maintainer at 19:00.
+	const pr = `{"id": "PR_%[1]d", "number": %[1]d, "title": "t", "mergeable": %[5]q, "createdAt": "2026-11-24T18:30:00Z",
+		"headRefOid": "h%[1]d", "isInMergeQueue": %[6]t,
+		"author": {"__typename": %[7]q, "login": "fc-agent"},
+		"labels": {"nodes": [%[2]s]},
+		"commits": {"nodes": [{"commit": {"committedDate": %[3]q, "statusCheckRollup": {"state": "SUCCESS"}}}]},
+		"reviews": {"nodes": [%[4]s]},
+		"timelineItems": {"nodes": []},
+		"events": {"nodes": [
+			{"__typename": "LabeledEvent", "createdAt": "2026-11-24T19:00:00Z", "label": {"name": "merge-first"}, "actor": {"__typename": "User", "login": "maint"}}]}}`
+	const label = `{"name": "merge-first"}`
+	const review = `{"author": {"__typename": "Bot", "login": %q}, "authorAssociation": "NONE", "state": %q, "submittedAt": %q, "commit": {"oid": %q}}`
+	approved := fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T20:00:00Z", "h7")
+	dismissed := fmt.Sprintf(review, "fc-reviewer", "DISMISSED", "2026-11-24T19:30:00Z", "old")
+	var pulls string   // the open pull requests
+	var asked []string // the REST requests
+	var behindBy int   // GitHub's answer to the comparison
+	var failing string // the path of a REST request that fails, if any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			asked = append(asked, r.Method+" "+r.URL.EscapedPath())
+			if strings.Contains(r.URL.Path, "/compare/") && r.URL.RawQuery != "per_page=1" {
+				http.Error(w, "the comparison asks for every commit", http.StatusBadRequest)
+				return
+			}
+			switch {
+			case r.URL.EscapedPath() == failing:
+				http.Error(w, "GitHub is down", http.StatusBadGateway)
+			case r.URL.Path == "/repos/o/r/pulls/7":
+				fmt.Fprint(w, `{"number": 7, "base": {"ref": "release/1"}, "head": {"ref": "work"}}`)
+			case r.URL.EscapedPath() == "/repos/o/r/compare/release%2F1...h7":
+				// GitHub compares base...head: behind_by counts the
+				// commits of the base that the head lacks.
+				fmt.Fprintf(w, `{"status": "diverged", "ahead_by": 4, "behind_by": %d}`, behindBy)
+			default:
+				http.NotFound(w, r)
+			}
+			return
+		}
+		var body struct {
+			Query string `json:"query"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if strings.Contains(body.Query, "pullRequests(") {
+			fmt.Fprintf(w, `{"data": {"repository": {"pullRequests": {"nodes": [%s]}}}}`, pulls)
+			return
+		}
+		fmt.Fprint(w, `{"data": {"repository": {"issues": {"nodes": []}}}}`)
+	}))
+	defer srv.Close()
+	g := &github{api: srv.URL, client: srv.Client(), token: "t", expires: time.Now().Add(time.Hour)}
+	c := &Config{Repo: "o/r", Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint"}, MergeFirstLimit: duration{100000 * time.Hour}}
+	at := func(hour, min int) time.Time { return time.Date(2026, 11, 24, hour, min, 0, 0, time.UTC) }
+	const before, after = "2026-11-24T19:45:00Z", "2026-11-24T20:30:00Z"
+	both := []string{"GET /repos/o/r/pulls/7", "GET /repos/o/r/compare/release%2F1...h7"}
+	for _, tc := range []struct {
+		name     string
+		pulls    string
+		behindBy int
+		asks     []string
+		job      string // of pull request 7
+		approved time.Time
+	}{
+		{"approved on a commit made before the approval, behind",
+			fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot"), 83, both, "fix", at(20, 0)},
+		{"the same, not behind",
+			fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot"), 0, both, autoMerge, at(20, 0)},
+		{"approved before on an older commit: the first approval counts",
+			fmt.Sprintf(pr, 7, label, "2026-11-24T19:15:00Z", dismissed+","+approved, "MERGEABLE", false, "Bot"), 2, both, "fix", at(19, 30)},
+		{"approved on a commit made since the first approval",
+			fmt.Sprintf(pr, 7, label, before, dismissed+","+approved, "MERGEABLE", false, "Bot"), 83, nil, autoMerge, at(19, 30)},
+		{"approved before the label, on a commit made before the label",
+			fmt.Sprintf(pr, 7, label, "2026-11-24T18:45:00Z", fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T18:50:00Z", "h7"), "MERGEABLE", false, "Bot"), 83, both, "fix", at(18, 50)},
+		{"not approved yet",
+			fmt.Sprintf(pr, 7, label, before, "", "MERGEABLE", false, "Bot"), 83, nil, "review", time.Time{}},
+		{"approved by another App only",
+			fmt.Sprintf(pr, 7, label, before, fmt.Sprintf(review, "other-app", "APPROVED", "2026-11-24T20:00:00Z", "h7"), "MERGEABLE", false, "Bot"), 83, nil, "review", time.Time{}},
+		{"approved on an older commit, the latest not reviewed",
+			fmt.Sprintf(pr, 7, label, before, dismissed, "MERGEABLE", false, "Bot"), 83, nil, "review", at(19, 30)},
+		{"approved, with a conflict",
+			fmt.Sprintf(pr, 7, label, before, approved, "CONFLICTING", false, "Bot"), 83, nil, "fix", at(20, 0)},
+		{"approved, in the merge queue",
+			fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", true, "Bot"), 83, nil, "", at(20, 0)},
+		{"approved, a person's",
+			fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "User"), 83, nil, "", at(20, 0)},
+		{"approved, without the label",
+			fmt.Sprintf(pr, 7, "", before, approved, "MERGEABLE", false, "Bot"), 83, nil, autoMerge, at(20, 0)},
+		{"another is approved too: only the one that merges first is asked about",
+			fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot") + "," +
+				fmt.Sprintf(pr, 8, label, before, fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T20:00:00Z", "h8"), "MERGEABLE", false, "Bot"), 83, both, "fix", at(20, 0)},
+	} {
+		pulls, behindBy, asked = tc.pulls, tc.behindBy, nil
+		items, err := survey(context.Background(), direct{g, c.Repo}, g, c)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if !slices.Equal(asked, tc.asks) {
+			t.Errorf("%s: asked %v, want %v", tc.name, asked, tc.asks)
+		}
+		f := first(items, c, time.Now())
+		it := items[0]
+		if job, why := next(it, c, f); job != tc.job {
+			t.Errorf("%s: job %q (%s), want %q", tc.name, job, why, tc.job)
+		}
+		if want := len(tc.asks) / 2 * tc.behindBy; it.Behind != want || !it.ApprovedSince.Equal(tc.approved) {
+			t.Errorf("%s: behind %d, approved since %v; want %d, %v", tc.name, it.Behind, it.ApprovedSince, want, tc.approved)
+		}
+		for _, other := range items[1:] {
+			if job, why := next(other, c, f); other.Behind != 0 || job != "" || !strings.Contains(why, "waiting until #7") {
+				t.Errorf("%s: #%d is %d behind and gets %q (%s); want 0 and to wait for #7", tc.name, other.Number, other.Behind, job, why)
+			}
+		}
+	}
+
+	// The fix pushes a commit made after the pull request began to hold
+	// the others back, and the reviewer approves it: nothing is asked
+	// again, and it gets auto-merge.
+	pulls, asked = fmt.Sprintf(pr, 7, label, after, dismissed+","+fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T21:00:00Z", "h7"), "MERGEABLE", false, "Bot"), nil
+	items, err := survey(context.Background(), direct{g, c.Repo}, g, c)
+	if err != nil || len(asked) != 0 {
+		t.Fatalf("survey after the fix: asked %v, %v", asked, err)
+	}
+	if job, why := next(items[0], c, first(items, c, time.Now())); job != autoMerge || !items[0].HeadAt.Equal(at(20, 30)) {
+		t.Errorf("after the fix: job %q (%s), latest commit made at %v; want auto-merge, %v", job, why, items[0].HeadAt, at(20, 30))
+	}
+
+	// After merge_first_limit it holds nothing back, and nothing is asked.
+	pulls, asked = fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot"), nil
+	short := *c
+	short.MergeFirstLimit = duration{time.Minute}
+	if _, err := survey(context.Background(), direct{g, c.Repo}, g, &short); err != nil || len(asked) != 0 {
+		t.Errorf("survey after merge_first_limit: asked %v, %v", asked, err)
+	}
+
+	// If GitHub does not say how far it is behind, the survey fails, so
+	// that no worker gives it auto-merge on a commit that may need to
+	// catch up.
+	for _, path := range []string{"/repos/o/r/pulls/7", "/repos/o/r/compare/release%2F1...h7"} {
+		failing, asked = path, nil
+		if items, err := survey(context.Background(), direct{g, c.Repo}, g, c); err == nil {
+			t.Errorf("survey without an answer from %s: %d items, asked %v; want an error", path, len(items), asked)
+		}
+	}
+}
+
 func TestFirstSince(t *testing.T) {
 	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]", Maintainers: []string{"maint", "github-actions"}, Apps: []string{"github-actions[bot]", "other-app[bot]"}}
 	t0 := time.Date(2026, 11, 24, 19, 0, 0, 0, time.UTC)
@@ -560,8 +768,9 @@ func TestCandidates(t *testing.T) {
 		t.Errorf("candidates %v, want %v", got, want)
 	}
 
-	// The jobs of the pull request that merges first come before all
-	// others, and no other pull request gets auto-merge.
+	// The jobs of a pull request whose label counts come before all
+	// others. Until the reviewer has approved a commit of it, it holds
+	// nothing back: 7 gets auto-merge.
 	c = &Config{MergeFirstLimit: duration{4 * time.Hour}}
 	items = append(items,
 		Item{Number: 7, PR: true, Ours: true, Checks: "SUCCESS", Review: "APPROVED"},
@@ -572,10 +781,22 @@ func TestCandidates(t *testing.T) {
 	for _, cand := range candidates(items, c) {
 		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
 	}
+	want = []string{"review 8", "park 9", "auto-merge 7", "fix 5", "review 4", "continue 3", "continue 6", "triage 2", "work 1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates with a labelled pull request, not approved yet %v, want %v", got, want)
+	}
+	// Once the reviewer has approved a commit of it, it merges first, and
+	// no other pull request gets auto-merge.
+	items[len(items)-2].ApprovedSince = time.Now().Add(-30 * time.Minute)
+	got = nil
+	for _, cand := range candidates(items, c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
 	want = []string{"review 8", "park 9", "fix 5", "review 4", "continue 3", "continue 6", "triage 2", "work 1"}
 	if !slices.Equal(got, want) {
 		t.Errorf("candidates with a pull request that merges first %v, want %v", got, want)
 	}
+	items[len(items)-2].ApprovedSince = time.Now().Add(-5 * time.Hour)
 	items[len(items)-2].FirstSince = time.Now().Add(-5 * time.Hour)
 	got = nil
 	for _, cand := range candidates(items, c) {
@@ -589,7 +810,7 @@ func TestCandidates(t *testing.T) {
 	// A pull request that closes a labelled issue merges first like one
 	// that has the label itself; the issue's own time does not hold back
 	// anything.
-	items[len(items)-2] = Item{Number: 8, PR: true, Ours: true, Checks: "SUCCESS", FirstIssue: 1, FirstSince: time.Now().Add(-time.Hour)}
+	items[len(items)-2] = Item{Number: 8, PR: true, Ours: true, Checks: "SUCCESS", FirstIssue: 1, FirstSince: time.Now().Add(-time.Hour), ApprovedSince: time.Now().Add(-30 * time.Minute)}
 	items[0] = Item{Number: 1, Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-2 * time.Hour), ClosingPRs: 1}
 	got = nil
 	for _, cand := range candidates(items, c) {
@@ -601,10 +822,12 @@ func TestCandidates(t *testing.T) {
 	}
 
 	// The jobs that lead to a pull request that merges first come next,
-	// in the order of the jobs: those of an issue whose label counts and
-	// those of the agent's draft that closes such an issue, for three days
-	// from the label. Another's draft (11), a draft with a label of its own
-	// (12) and a pull request that is ready (15) get nothing from this.
+	// in the order of the jobs: those of an issue whose label counts,
+	// those of the agent's draft that closes such an issue, and those of
+	// a pull request whose label counts and that is not approved yet (16),
+	// for three days from the label. Another's draft (11), a draft with a
+	// label of its own (12) and a pull request that was ready too late for
+	// the issue's label to count (15) get nothing from this.
 	hour := time.Now().Add(-time.Hour)
 	items = []Item{
 		{Number: 1},
@@ -615,20 +838,32 @@ func TestCandidates(t *testing.T) {
 		{Number: 6, PR: true, Draft: true, Ours: true, FirstIssue: 10, FirstSince: hour, IssueSince: hour},
 		{Number: 7, Labels: []string{mergeFirst}},
 		{Number: 8, Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-firstIssueSpan)},
-		{Number: 9, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: hour},
+		{Number: 9, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: hour, ApprovedSince: hour},
 		{Number: 11, PR: true, Draft: true, FirstIssue: 10, FirstSince: hour, IssueSince: hour},
 		{Number: 12, PR: true, Draft: true, Ours: true, Labels: []string{mergeFirst}, FirstSince: hour},
 		{Number: 13, PR: true, Draft: true, Ours: true, FirstIssue: 10, FirstSince: hour, IssueSince: time.Now().Add(-firstIssueSpan)},
 		{Number: 14, Labels: []string{mergeFirst, "proposed"}, FirstSince: hour},
 		{Number: 15, PR: true, Ours: true, Checks: "SUCCESS", FirstIssue: 10, IssueSince: hour},
+		{Number: 16, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: hour},
 	}
+	// Each candidate says which of the two it is, for its job's prompt.
+	var firsts, leading []int
 	got = nil
 	for _, cand := range candidates(items, c) {
 		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+		if cand.first {
+			firsts = append(firsts, cand.Number)
+		}
+		if cand.leads {
+			leading = append(leading, cand.Number)
+		}
 	}
-	want = []string{"review 9", "continue 6", "triage 14", "work 5", "review 4", "review 15", "continue 3", "continue 12", "continue 13", "triage 2", "work 1", "work 7", "work 8"}
+	want = []string{"review 9", "review 16", "continue 6", "triage 14", "work 5", "review 4", "review 15", "continue 3", "continue 12", "continue 13", "triage 2", "work 1", "work 7", "work 8"}
 	if !slices.Equal(got, want) {
 		t.Errorf("candidates with jobs that lead to a pull request that merges first %v, want %v", got, want)
+	}
+	if !slices.Equal(firsts, []int{9}) || !slices.Equal(leading, []int{16, 6, 14, 5}) {
+		t.Errorf("merges first: %v, leads: %v; want [9] and [16 6 14 5]", firsts, leading)
 	}
 	// Without a pull request that merges first, they come before all.
 	got = nil

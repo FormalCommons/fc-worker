@@ -22,19 +22,36 @@ func mustParse(t *testing.T, file string) *template.Template {
 func TestRunJob(t *testing.T) {
 	dir := t.TempDir()
 	prompt := filepath.Join(dir, "work.md")
-	os.WriteFile(prompt, []byte("{{.Kind}} {{.Number}} in {{.Repo}}: {{.Title}} ({{.Why}})"), 0o600)
+	os.WriteFile(prompt, []byte("{{.Kind}} {{.Number}} in {{.Repo}}: {{.Title}} ({{.Why}}){{if .Leads}}, leads{{end}}{{if .First}}, merges first{{end}}"), 0o600)
 	out := filepath.Join(dir, "out")
 	c := &Config{Repo: "o/r", Jobs: map[string]Job{"work": {
 		Prompt:  prompt,
 		Command: []string{"sh", "-c", `cp "$1" ` + out, "sh", "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if started, err := runJob(context.Background(), c, "work", mustParse(t, prompt), Item{Number: 7, Title: "Do it"}, "ready"); !started || err != nil {
+	if started, err := runJob(context.Background(), c, mustParse(t, prompt), candidate{Item: Item{Number: 7, Title: "Do it"}, job: "work", why: "ready"}); !started || err != nil {
 		t.Fatal(started, err)
 	}
 	got, _ := os.ReadFile(out)
 	if want := "issue 7 in o/r: Do it (ready)"; string(got) != want {
 		t.Errorf("prompt %q, want %q", got, want)
+	}
+
+	// The prompt can tell an item whose jobs lead to a pull request that
+	// merges first, and the pull request that merges first.
+	for _, tc := range []struct {
+		cand candidate
+		want string
+	}{
+		{candidate{Item: Item{Number: 7, Title: "Do it"}, job: "work", why: "ready", leads: true}, "issue 7 in o/r: Do it (ready), leads"},
+		{candidate{Item: Item{PR: true, Number: 8, Title: "Did it"}, job: "work", why: "approved", first: true}, "pull request 8 in o/r: Did it (approved), merges first"},
+	} {
+		if started, err := runJob(context.Background(), c, mustParse(t, prompt), tc.cand); !started || err != nil {
+			t.Fatal(started, err)
+		}
+		if got, _ := os.ReadFile(out); string(got) != tc.want {
+			t.Errorf("prompt %q, want %q", got, tc.want)
+		}
 	}
 }
 
@@ -57,7 +74,7 @@ func TestRunJobDeadline(t *testing.T) {
 			Limit:   duration{tc.limit},
 		}}}
 		start := time.Now()
-		if started, err := runJob(context.Background(), c, "work", mustParse(t, prompt), Item{Number: 7}, "ready"); !started || err != nil {
+		if started, err := runJob(context.Background(), c, mustParse(t, prompt), candidate{Item: Item{Number: 7}, job: "work", why: "ready"}); !started || err != nil {
 			t.Fatal(started, err)
 		}
 		got, _ := os.ReadFile(out)
@@ -82,7 +99,7 @@ func TestRunJobLogs(t *testing.T) {
 		Command: []string{"sh", "-c", "echo transcript; echo status >&2", "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if started, err := runJob(context.Background(), c, "review", mustParse(t, prompt), Item{PR: true, Number: 3}, "latest commit not reviewed"); !started || err != nil {
+	if started, err := runJob(context.Background(), c, mustParse(t, prompt), candidate{Item: Item{PR: true, Number: 3}, job: "review", why: "latest commit not reviewed"}); !started || err != nil {
 		t.Fatal(started, err)
 	}
 	files, _ := filepath.Glob(filepath.Join(logs, "*-w1-pr-3-review.log"))
@@ -97,7 +114,7 @@ func TestRunJobLogs(t *testing.T) {
 	ran := filepath.Join(dir, "ran")
 	c.Logs = filepath.Join(prompt, "logs") // under a file
 	c.Jobs["review"] = Job{Prompt: prompt, Command: []string{"touch", ran, "{prompt}"}, Timeout: duration{time.Minute}}
-	if started, err := runJob(context.Background(), c, "review", mustParse(t, prompt), Item{PR: true, Number: 3}, "latest commit not reviewed"); started || err == nil {
+	if started, err := runJob(context.Background(), c, mustParse(t, prompt), candidate{Item: Item{PR: true, Number: 3}, job: "review", why: "latest commit not reviewed"}); started || err == nil {
 		t.Errorf("started %v, error %v; want a job that did not start", started, err)
 	}
 	if _, err := os.Stat(ran); err == nil {
@@ -118,7 +135,7 @@ func TestRunJobTimeout(t *testing.T) {
 		Timeout: duration{500 * time.Millisecond},
 	}}}
 	start := time.Now()
-	if started, err := runJob(context.Background(), c, "fix", mustParse(t, prompt), Item{PR: true, Number: 1}, "checks failed"); !started || err == nil {
+	if started, err := runJob(context.Background(), c, mustParse(t, prompt), candidate{Item: Item{PR: true, Number: 1}, job: "fix", why: "checks failed"}); !started || err == nil {
 		t.Errorf("started %v, error %v; want a job that started and timed out", started, err)
 	}
 	if d := time.Since(start); d > 10*time.Second {
@@ -138,7 +155,7 @@ func TestRunJobNotStarted(t *testing.T) {
 		Command: []string{filepath.Join(dir, "missing"), "{prompt}"},
 		Timeout: duration{time.Minute},
 	}}}
-	if started, err := runJob(context.Background(), c, "work", mustParse(t, prompt), Item{Number: 1}, "ready"); started || err == nil {
+	if started, err := runJob(context.Background(), c, mustParse(t, prompt), candidate{Item: Item{Number: 1}, job: "work", why: "ready"}); started || err == nil {
 		t.Errorf("started %v, error %v; want a job that did not start", started, err)
 	}
 }
@@ -165,7 +182,7 @@ func TestPrompts(t *testing.T) {
 			t.Fatal(err)
 		}
 		var b strings.Builder
-		if err := tmpl.Execute(&b, prompt{"o/r", "o", "r", "issue", 7, "Do it", "ready", "2026-01-01 00:00 UTC"}); err != nil {
+		if err := tmpl.Execute(&b, prompt{Repo: "o/r", Owner: "o", Name: "r", Kind: "issue", Number: 7, Title: "Do it", Why: "ready", Deadline: "2026-01-01 00:00 UTC"}); err != nil {
 			t.Errorf("%s: %v", job, err)
 		}
 		if !strings.Contains(b.String(), "#7") {

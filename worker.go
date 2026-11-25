@@ -54,6 +54,10 @@ func (w *worker) fresh(ctx context.Context, cand candidate) (items []Item, fromD
 type candidate struct {
 	Item
 	job, why string
+	// first is set for the pull request that merges first, and leads for
+	// an item whose jobs lead to one: see first and leads. They decide
+	// the order of the jobs, and the job's prompt can use them.
+	first, leads bool
 }
 
 func (c candidate) key() string {
@@ -72,9 +76,9 @@ func candidates(items []Item, c *Config) []candidate {
 	// 0 for the pull request that merges first, 1 for what leads to one.
 	rank := func(a candidate) int {
 		switch {
-		case f != 0 && a.Number == f:
+		case a.first:
 			return 0
-		case leads(a.Item, now):
+		case a.leads:
 			return 1
 		}
 		return 2
@@ -82,7 +86,14 @@ func candidates(items []Item, c *Config) []candidate {
 	var out []candidate
 	for _, it := range items {
 		if job, why := next(it, c, f); job != "" {
-			out = append(out, candidate{it, job, why})
+			cand := candidate{Item: it, job: job, why: why}
+			switch {
+			case f != 0 && it.Number == f:
+				cand.first = true
+			case leads(it, now):
+				cand.leads = true
+			}
+			out = append(out, cand)
 		}
 	}
 	slices.SortStableFunc(out, func(a, b candidate) int {
@@ -229,7 +240,7 @@ func (w *worker) do(ctx context.Context, cand candidate, prompts string) error {
 		}
 		start := time.Now()
 		var started bool
-		started, err = runJob(ctx, w.c, cand.job, t, cand.Item, cand.why)
+		started, err = runJob(ctx, w.c, t, cand)
 		log.Printf("%s: %s ended after %s", cand.key(), cand.job, time.Since(start).Round(time.Second))
 		// A job whose command started is a round, whether or not it
 		// succeeded.

@@ -755,7 +755,7 @@ func TestRecordDesk(t *testing.T) {
 		tc.set(f, w)
 		// The job added a label, which the desk has not yet seen.
 		f.github[12] = []string{"proposed"}
-		cand := candidate{Item{ID: "I_12", Number: 12, Title: "t"}, "work", "ready"}
+		cand := candidate{Item: Item{ID: "I_12", Number: 12, Title: "t"}, job: "work", why: "ready"}
 		if err := w.record(context.Background(), cand, "", nil); err != nil {
 			t.Errorf("%s: %v", tc.name, err)
 		}

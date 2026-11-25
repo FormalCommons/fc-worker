@@ -18,8 +18,8 @@ import (
 // Pull request 20 is the agent's: approved by the reviewer, with a
 // person's request for changes, a removal from the merge queue since, and
 // a maintainer's label. 22 is a draft with nothing, by a deleted account.
-// 23 conflicts, and has reviews of an older commit and by a deleted
-// account. The desk also gives 20 an event of a type that this worker does
+// 23 conflicts, and has reviews of an older commit, which the reviewer
+// approved before a push dismissed that, and by a deleted account. The desk also gives 20 an event of a type that this worker does
 // not know. Issue 16 is a workflow's, labelled as it was opened; pull
 // requests 24 and 25 close it. 24 was opened as a draft by a member whom
 // the config does not name, and another such member asks for changes; it
@@ -128,7 +128,7 @@ const (
   "labels": {"nodes": [{"name": "needs-human"}, {"name": "merge-first"}]}, "autoMergeRequest": null,
   "commits": {"nodes": [{"commit": {"committedDate": "2026-11-24T21:00:00Z", "statusCheckRollup": {"state": "FAILURE"}}}]},
   "reviews": {"nodes": [
-    {"author": {"__typename": "Bot", "login": "fc-reviewer"}, "authorAssociation": "NONE", "state": "APPROVED",
+    {"author": {"__typename": "Bot", "login": "fc-reviewer"}, "authorAssociation": "NONE", "state": "DISMISSED",
      "submittedAt": "2026-11-24T20:30:00Z", "commit": {"oid": "old"}},
     {"author": null, "authorAssociation": "NONE", "state": "CHANGES_REQUESTED", "submittedAt": "2026-11-24T21:30:00Z", "commit": {"oid": "ccc"}},
     {"author": {"__typename": "Bot", "login": "fc-reviewer"}, "authorAssociation": "NONE", "state": "COMMENTED",
@@ -191,7 +191,7 @@ const (
   "labels": ["needs-human", "merge-first"], "draft": false, "head": "ccc", "head_committed_at": "2026-11-24T21:00:00Z",
   "mergeable": "CONFLICTING", "checks": "FAILURE", "review_decision": "REVIEW_REQUIRED", "auto_merge": false, "queued": true,
   "reviews": [
-    {"author": {"type": "Bot", "login": "fc-reviewer"}, "association": "NONE", "state": "APPROVED",
+    {"author": {"type": "Bot", "login": "fc-reviewer"}, "association": "NONE", "state": "DISMISSED",
      "submitted_at": "2026-11-24T20:30:00Z", "commit": "old"},
     {"author": null, "association": "NONE", "state": "CHANGES_REQUESTED", "submitted_at": "2026-11-24T21:30:00Z", "commit": "ccc"},
     {"author": {"type": "Bot", "login": "fc-reviewer"}, "association": "NONE", "state": "COMMENTED",
@@ -328,19 +328,21 @@ func TestDeskFacts(t *testing.T) {
 		{ID: "I_16", Number: 16, Title: "Move the pin", Labels: []string{"merge-first"}, FirstSince: at(14, 0, 2), ClosingPRs: 2},
 		{ID: "I_17", Number: 17, Title: "A member's"},
 		{PR: true, ID: "PR_20", Number: 20, Title: "Prove the lemma", Labels: []string{"merge-first"}, FirstSince: at(20, 4, 12),
-			Ours: true, Head: "aaa", Checks: "SUCCESS", Review: "APPROVED", ReviewedAt: at(21, 30, 0), Requested: true,
-			Decision: "CHANGES_REQUESTED", AutoMerge: true, Removals: 1},
-		{PR: true, ID: "PR_22", Number: 22, Title: "Draft", Outside: true, Draft: true, Head: "bbb", MergeUnknown: true},
+			Ours: true, Head: "aaa", HeadAt: at(21, 0, 0), Checks: "SUCCESS", Review: "APPROVED", ReviewedAt: at(21, 30, 0), Requested: true,
+			Decision: "CHANGES_REQUESTED", AutoMerge: true, Removals: 1, ApprovedSince: at(21, 30, 0)},
+		{PR: true, ID: "PR_22", Number: 22, Title: "Draft", Outside: true, Draft: true, Head: "bbb", HeadAt: at(22, 59, 0), MergeUnknown: true},
+		// Approved on an older commit.
 		{PR: true, ID: "PR_23", Number: 23, Title: "Conflicting", Labels: []string{"needs-human", "merge-first"},
-			Head: "ccc", Conflict: true, Checks: "FAILURE", Decision: "REVIEW_REQUIRED", Queued: true},
+			Head: "ccc", HeadAt: at(21, 0, 0), Conflict: true, Checks: "FAILURE", Decision: "REVIEW_REQUIRED", Queued: true,
+			ApprovedSince: at(20, 30, 0)},
 		// First since it was marked ready, not since it was opened. Its
 		// removal from the queue came before its latest commit.
 		{PR: true, ID: "PR_24", Number: 24, Title: "Move the pin", FirstSince: at(16, 0, 0), FirstIssue: 16, IssueSince: at(14, 0, 2),
-			Head: "ddd", Checks: "SUCCESS", Review: "APPROVED", ReviewedAt: at(16, 30, 0), Requested: true,
-			Decision: "CHANGES_REQUESTED"},
+			Head: "ddd", HeadAt: at(17, 0, 0), Checks: "SUCCESS", Review: "APPROVED", ReviewedAt: at(16, 30, 0), Requested: true,
+			Decision: "CHANGES_REQUESTED", ApprovedSince: at(16, 30, 0)},
 		// First since it was opened.
 		{PR: true, ID: "PR_25", Number: 25, Title: "Move the pin again", FirstSince: at(15, 30, 0), FirstIssue: 16, IssueSince: at(14, 0, 2),
-			Ours: true, Head: "eee", Decision: "REVIEW_REQUIRED"},
+			Ours: true, Head: "eee", HeadAt: at(15, 30, 0), Decision: "REVIEW_REQUIRED"},
 	}
 	for i, it := range fromDesk {
 		if diff := differing(want[i], it); len(diff) != 0 {
