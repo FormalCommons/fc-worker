@@ -100,7 +100,8 @@ Each worker runs one job at a time:
 2. **Pick.** Choose the first unclaimed job, in this order: fix, review,
    continue, triage, work. Within each, oldest first. The jobs of a pull
    request that [merges first](#merging-one-pull-request-first) come
-   before all others.
+   before all others, and after them the jobs that lead to such a pull
+   request: those of an issue whose label `merge-first` counts.
 3. **Claim** the item (see [Claims](#claims)). If another worker was faster,
    pick again.
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
@@ -243,8 +244,9 @@ to the issue's sub-issues.
 
 The jobs that lead to that pull request come before all others too, but
 after those of a pull request that merges first already: the issue's own
-jobs, for three days from the label, and the continue jobs of a draft from
-the agent that closes the issue. Work is otherwise the last job that a
+jobs and the continue jobs of a draft from the agent that closes the
+issue, both for three days from the label. A label on the draft itself
+gives its jobs nothing. Work is otherwise the last job that a
 worker picks, so the change would wait behind everything else while the
 others go on merging what it must then follow. This holds nothing back: the
 other pull requests stay out of the merge queue only once the pull request
@@ -269,12 +271,15 @@ the pull request.
 
 `fc-worker -list` shows, for a pull request that has the label or closes
 an issue whose label counts, until when it merges first or why it does
-not. For a labelled issue it shows whether the label counts only once an
-open pull request closes the issue.
+not. For a labelled issue it shows whether the label counts, if the issue
+needs a job or an open pull request closes it.
 
-While an open pull request closes an open issue that has the label, each
-survey costs one GraphQL point more. The worker asks who labelled ten such
-issues at most, the oldest.
+While an open issue that has the label needs a job, or an open pull
+request closes it, each survey costs one GraphQL point more. That is from
+when the issue is ready for a job until its pull request has merged,
+whether the label counts or not, so take a label that does not count off
+again. The worker asks who labelled ten such issues at most: those that a
+pull request closes first, and the oldest first.
 
 ## Setting up a repository
 
@@ -582,10 +587,12 @@ name and email for its commits.
   `watch` and the like) can write issues, and if the workflows that do write
   them put in only what the project controls, such as fixed text and a
   checked tag name, never text from elsewhere. Agents can make it act
-  through the code that workflows run. That gives them one thing that
+  through the code that workflows run. That gives them two things that
   they cannot do as the agent App: each issue that it opens with the label
   `merge-first` lets their pull requests hold the others back from the
-  merge queue, for at most three days and `merge_first_limit` (see
+  merge queue, for at most three days and `merge_first_limit`, and has its
+  own jobs and those of their drafts that close it picked before the
+  others for three days (see
   [Merging one pull request first](#merging-one-pull-request-first)). So
   a workflow that opens issues with this label must open them rarely, and
   by a rule that agents cannot get around: they can edit and close its
