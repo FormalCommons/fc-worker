@@ -95,7 +95,8 @@ a draft of the agent App back from the workers, label it `needs-human`.
 Each worker runs one job at a time:
 
 1. **Survey.** Read the claims with git, then the open issues and pull
-   requests with GraphQL.
+   requests: from GitHub with GraphQL, or from a desk if the config names
+   one (see [Surveying from a desk](#surveying-from-a-desk)).
 2. **Pick.** Choose the first unclaimed job, in this order: fix, review,
    continue, triage, work. Within each, oldest first. The jobs of a pull
    request that [merges first](#merging-one-pull-request-first) come
@@ -114,9 +115,9 @@ nothing but wait while fewer than `rate_reserve` points or requests are
 left in the agent App's GraphQL or REST rate limit, which it asks GitHub
 for before each survey. The workers and agent jobs of an installation
 share these limits, 5,000 an hour each unless GitHub grants more, and a
-survey costs about 3 GraphQL points for every 50 open issues and 25 open
-pull requests. Review jobs use the reviewer App's limits, which the worker
-does not watch. `-list` shows what is left.
+survey of GitHub costs about 3 GraphQL points for every 50 open issues and
+25 open pull requests. Review jobs use the reviewer App's limits, which the
+worker does not watch. `-list` shows what is left.
 
 A job whose command fails still counts as a round, but not toward
 `idle_rounds`, and the worker waits before it goes on. So a failure that
@@ -164,7 +165,9 @@ the ref. Each lease commit's parent is the one it replaces, so a claim
 never returns to a state that another worker saw before, and a worker can
 only take a claim if nobody has taken and released it since it looked.
 The claim's history is the item's history of jobs. Whatever a released
-claim's job did is already in the survey that follows.
+claim's job did is already in the survey of GitHub that follows. A desk's
+copy can be older than that, so a worker that surveys from one does more
+(see [Surveying from a desk](#surveying-from-a-desk)).
 
 GitHub now and then fails a push, and a claim left unreleased would hold
 its item until the lease expired. So a failed release is tried again for
@@ -343,14 +346,43 @@ Then install the new files and run `systemctl reload 'fc-worker@*'`. A
 worker from before SIGHUP was handled exits at once on it, stopping its job,
 so restart it the first time instead.
 
-### Comparing with a desk
+### Surveying from a desk
 
 A desk is a service that follows the repository on GitHub, keeps a copy of
 every open issue and pull request, and answers `GET /survey?repo=owner/name`
-from that copy, which costs nothing of GitHub's rate limits. The worker does
-not survey from one yet. `-compare` is for testing a desk before it does: it
-reads the facts from the desk, then from GitHub, works out the items from
-each as a survey does, and prints one line of JSON:
+from that copy, which costs nothing of GitHub's rate limits. With `desk` in
+the config, each survey of the worker is the desk's, and `-list` shows it
+too. If the desk does not answer, or its answer is more than five minutes
+old, the worker surveys GitHub that time, and logs why.
+
+The desk's copy can be a minute behind GitHub, and so behind the claims: it
+may still show a job that another worker has done and released since. So
+the worker has the desk read one item from GitHub at once, with
+`POST /refresh`, at three points:
+
+- After it claims an item that it picked from the desk's survey. It then
+  surveys again. If the item no longer needs the same job, the worker
+  releases the claim and tries the next item of its first survey;
+  otherwise it runs the job on the item as it is now.
+- Before it reads the item again after the job, to see what the job
+  changed.
+- Before it releases the claim after a job, so that the next survey of any
+  worker shows what the job did.
+
+If the desk fails the first or the second of these, the worker surveys
+GitHub instead; if GitHub fails too after a claim, the worker releases the
+claim and runs no job. A refresh that fails before a release is only
+logged.
+
+The worker still asks GitHub for its rate limits before each survey, for
+who labelled an issue `merge-first`, and for an item's comments after a
+job, and it writes to GitHub as before.
+
+### Comparing with a desk
+
+`-compare` is for testing a desk: it reads the facts from the desk, then
+from GitHub, works out the items from each as a survey does, and prints one
+line of JSON:
 
 ```json
 {
@@ -436,7 +468,7 @@ unset or empty, the worker refuses to start.
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
 | `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added; for one that closes a labelled issue, from when it was ready for review, or from when the issue got the label if that was later. Default `4h`. |
-| `desk` | Optional: a desk that follows the repository (see "Comparing with a desk"), as `url` and `token`, this worker's client token for it. Only `-compare` uses it so far: the worker still reads everything from GitHub. |
+| `desk` | Optional: a desk that follows the repository, as `url` and `token`, this worker's client token for it. The worker then surveys from the desk, and from GitHub only when the desk does not answer or its answer is old (see "Surveying from a desk"). Without it, the worker reads everything from GitHub. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
 A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can

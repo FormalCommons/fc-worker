@@ -16,12 +16,33 @@ import (
 type worker struct {
 	c       *Config
 	gh      *github
+	desk    *desk // nil if the config names none
 	claims  *claims
 	prompts *promptRepo // nil if the prompts are files
 }
 
-// survey returns every open issue and pull request, oldest first.
-func (w *worker) survey(ctx context.Context) ([]Item, error) {
+// survey returns every open issue and pull request, oldest first: from the
+// desk, if the config names one and it answers, and otherwise from GitHub.
+// It reports whether the desk gave them, since its copy can be a minute
+// old.
+func (w *worker) survey(ctx context.Context) (items []Item, fromDesk bool, err error) {
+	src := &fallback{desk: w.desk, direct: direct{w.gh, w.c.Repo}}
+	items, err = survey(ctx, src, w.gh, w.c)
+	return items, src.fromDesk, err
+}
+
+// fresh surveys with cand's item as GitHub has it now: the desk reads the
+// item again first. If the desk cannot, or the config names none, the
+// survey is GitHub's own.
+func (w *worker) fresh(ctx context.Context, cand candidate) ([]Item, error) {
+	if w.desk != nil {
+		err := w.desk.refresh(ctx, cand.Number)
+		if err == nil {
+			items, _, err := w.survey(ctx)
+			return items, err
+		}
+		log.Printf("%s: refresh: %v; surveying GitHub instead", cand.key(), err)
+	}
 	return survey(ctx, direct{w.gh, w.c.Repo}, w.gh, w.c)
 }
 
@@ -89,12 +110,14 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	}
 	// Claims are fetched before the survey. A worker releases its claim
 	// only after its job is done, so any claim released since then shows
-	// its job's work in the survey.
+	// its job's work in a survey of GitHub. A desk's copy can be older
+	// than the claims, so an item picked from it is looked at again once
+	// it is claimed.
 	held, err := w.claims.fetch(ctx)
 	if err != nil {
 		return false, err
 	}
-	items, err := w.survey(ctx)
+	items, fromDesk, err := w.survey(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -112,17 +135,61 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 			log.Printf("%s: not claimed: %v", key, err)
 			continue
 		}
-		err = w.do(ctx, cand, prompts)
-		// Release even when shutting down, so that others need not wait
-		// for the claim to expire.
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-		if err := w.claims.release(rctx, key, cand.job, commit); err != nil {
-			log.Printf("%s: release: %v", key, err)
+		if fromDesk {
+			// Another worker may have done this job and released its
+			// claim since the desk last read the item. Nobody else works
+			// on it now, so what it needs now is what to do.
+			now, ok, err := w.still(ctx, cand)
+			if err != nil {
+				w.release(ctx, cand, commit)
+				return false, err
+			}
+			if !ok {
+				log.Printf("%s: no longer needs %s; claim given back", key, cand.job)
+				w.release(ctx, cand, commit)
+				continue
+			}
+			cand = now
 		}
-		cancel()
+		err = w.do(ctx, cand, prompts)
+		if w.desk != nil {
+			// The next survey of any worker must show this job's work as
+			// soon as the claim is gone. This too is done when shutting
+			// down.
+			if err := w.desk.refresh(context.WithoutCancel(ctx), cand.Number); err != nil {
+				log.Printf("%s: refresh: %v", key, err)
+			}
+		}
+		w.release(ctx, cand, commit)
 		return true, err
 	}
 	return false, nil
+}
+
+// still looks at a claimed item again, and returns it as it is now if it
+// still needs cand's job. It reports false if the item is no longer open,
+// or needs no job or another one.
+func (w *worker) still(ctx context.Context, cand candidate) (candidate, bool, error) {
+	items, err := w.fresh(ctx, cand)
+	if err != nil {
+		return cand, false, err
+	}
+	for _, now := range candidates(items, w.c) {
+		if now.key() == cand.key() && now.job == cand.job {
+			return now, true, nil
+		}
+	}
+	return cand, false, nil
+}
+
+// release ends the claim on cand's item. It does so even when shutting
+// down, so that others need not wait for the claim to expire.
+func (w *worker) release(ctx context.Context, cand candidate, commit string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	if err := w.claims.release(ctx, cand.key(), cand.job, commit); err != nil {
+		log.Printf("%s: release: %v", cand.key(), err)
+	}
 }
 
 // do does one job and logs it. prompts is the commit of the prompts
@@ -177,7 +244,9 @@ func (w *worker) prompt(ctx context.Context, job, commit string) (*template.Temp
 // rounds in all. A failed command does not count toward idle_rounds, so that
 // an outage, such as of the gateway, does not park item after item.
 func (w *worker) record(ctx context.Context, cand candidate, version string, jobErr error) error {
-	items, err := w.survey(ctx)
+	// A desk's copy from before the job would make a round that changed
+	// something count as one that changed nothing.
+	items, err := w.fresh(ctx, cand)
 	if err != nil {
 		return err
 	}
@@ -354,7 +423,7 @@ func (w *worker) list(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	items, err := w.survey(ctx)
+	items, _, err := w.survey(ctx)
 	if err != nil {
 		return err
 	}

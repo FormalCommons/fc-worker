@@ -33,6 +33,9 @@ func main() {
 		name:  c.Name,
 		token: gh.getToken,
 	}}
+	if c.Desk != nil {
+		w.desk = newDesk(c)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
