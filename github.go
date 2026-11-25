@@ -22,6 +22,18 @@ type github struct {
 
 	token   string
 	expires time.Time
+
+	// lacking is the last pull request of which GitHub said that its base
+	// branch has commits that its latest commit lacks: see behind.
+	lacking lacking
+}
+
+// lacking is a pull request's latest commit and how many commits of the
+// base branch GitHub said that it lacks, more than 0.
+type lacking struct {
+	number int
+	head   string
+	by     int
 }
 
 func newGitHub(c *Config) *github {

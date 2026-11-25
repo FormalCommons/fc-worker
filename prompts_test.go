@@ -103,6 +103,18 @@ func TestPromptRepo(t *testing.T) {
 		t.Errorf("after a commit broken for pull requests: %s, want the last good commit", c)
 	}
 
+	// And one whose prompt fails only for an item whose jobs lead to a
+	// pull request that merges first, or only for the one that merges
+	// first.
+	commit(t, src, map[string]string{"jobs/review.md": "{{if .Leads}}{{template \"_leads.md\" .}}{{end}}"})
+	if _, c := render(t, p, "work.md"); c != second {
+		t.Errorf("after a commit broken for what leads to a pull request that merges first: %s, want the last good commit", c)
+	}
+	commit(t, src, map[string]string{"jobs/review.md": "{{if .First}}{{template \"_first.md\" .}}{{end}}"})
+	if _, c := render(t, p, "work.md"); c != second {
+		t.Errorf("after a commit broken for the pull request that merges first: %s, want the last good commit", c)
+	}
+
 	// After a restart with a config whose prompts the commit in use lacks,
 	// that commit is not used.
 	s := &promptRepo{url: filepath.Join(t.TempDir(), "missing"), ref: "main", dir: dir, files: []string{"jobs/work.md"}}

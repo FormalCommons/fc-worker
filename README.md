@@ -40,11 +40,13 @@ pull request from GitHub. The first row that matches decides:
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
 | Issue that an open pull request from the project will close, or that a pull request merged less than five minutes ago will close (GitHub closes it seconds after the merge) | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
+| Pull request whose label `merge-first` has [counted](#merging-one-pull-request-first) for less than three days and that the reviewer has never approved, with a conflict, with checks that are running or have passed, and with neither an approval nor a request for changes from the reviewer, nor a request for changes from a person in the project, on its latest commit | waiting, then needs review | nothing while the checks run, then a **review** job: until its approval it holds nothing back, so a fix for each new conflict would only start its checks and its review again |
 | Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue twice since its approval and its latest commit, and not back in it | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
-| Pull request of the agent App that the reviewer approved on its latest commit, that GitHub would take, and that neither has auto-merge on nor is in the merge queue, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged or its label no longer counts |
+| Pull request of the agent App that the reviewer approved on its latest commit, that GitHub would take, and that neither has auto-merge on nor is in the merge queue, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged or has held the others back for `merge_first_limit` |
+| The pull request that merges first, if the agent App opened it, with such an approval, when its latest commit was made before it began to hold the others back and the base branch has commits that it lacks | needs fix | a **fix** job, which merges the base branch, so that it catches up once before the merge queue takes it. If GitHub does not say whether it lacks any, nothing, until a survey gets the answer |
 | Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it. After a first removal from the merge queue since the approval and the latest commit, it turns auto-merge on again, once, since the cause may be outside the code, such as a failed download in CI |
 
 Every state either has a job or waits for something that has one, so
@@ -102,7 +104,8 @@ Each worker runs one job at a time:
    request that [merges first](#merging-one-pull-request-first) come
    before all others, and after them the jobs that lead to such a pull
    request: for three days, those of an issue whose label `merge-first`
-   counts and of the agent's draft that closes it.
+   counts, of the agent's draft that closes it, and of a pull request
+   whose label counts and that the reviewer has not approved yet.
 3. **Claim** the item (see [Claims](#claims)). If another worker was faster,
    pick again.
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,
@@ -189,7 +192,7 @@ up to a minute, while the claim is still the worker's.
 | `proposed` | An agent created this issue. A triage job checks it before anyone works on it. |
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
-| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer, or from an App in `apps` that opens the issue with it: each pull request that closes it does, and the issue's own jobs come before the others. See [below](#merging-one-pull-request-first). |
+| `merge-first` | On a pull request, from a maintainer: its jobs come before the others, and from the reviewer's first approval this one merges before all others. On an issue, from a maintainer, or from an App in `apps` that opens the issue with it: each pull request that closes it does, and the issue's own jobs come before the others. See [below](#merging-one-pull-request-first). |
 
 People in the project steer the work through issues, comments and reviews.
 An issue that one of them opens is ready at once. Labelling anything
@@ -205,22 +208,85 @@ and a review again, which take longer than the next conflict takes to
 come. GitHub starts no `pull_request` workflow for a pull request that has
 a conflict.
 
-Label such a pull request `merge-first`. While it is open, from the
-project, ready for review and not parked:
+Label such a pull request `merge-first`. What the label does comes in two
+parts, while the pull request is open, from the project, ready for review
+and not parked.
+
+**Before the reviewer's first approval** it holds nothing back. Its
+checks, its reviews and its fixes can take hours, and if the others
+waited all that time, nothing would merge for hours. Until then:
+
+- its own jobs come before those of the others;
+- a conflict alone does not send it to a fix. While the checks of its
+  latest commit run, it waits for them, and when they have passed and
+  the commit has no review, it gets its review, with the conflict: the
+  default branch still moves, and a fix for each new conflict would start
+  its checks and its review again, as above. Failed checks and a request
+  for changes lead to a fix as for any pull request, and so does a
+  conflict on a commit whose checks never started, which is what a
+  conflict does to a new commit: there is nothing to wait for then.
+
+Both last for three days from when the label began to count. After that
+its jobs are picked like any others, and a conflict leads to a fix again.
+
+**From the reviewer's first approval** it merges first:
 
 - the workers turn on auto-merge for no other pull request, so the default
   branch stops moving once the merge queue is empty. Pull requests that
   are in the queue already, or have auto-merge on, still merge. All other
   jobs go on, and the approved pull requests go to the merge queue when
   this one has merged;
-- its own jobs come before all others.
+- its own jobs come before all others;
+- it catches up with the default branch once. The others merged until the
+  approval, so the commit that was checked and approved usually lacks
+  many commits of the base branch, and the merge queue, which builds the
+  two together, would be the first to find out whether they still fit.
+  So when the pull request is the agent App's, is approved on its latest
+  commit and would get auto-merge, and that commit was made before it
+  began to hold the others back, the worker asks GitHub how many commits
+  the base branch has that it lacks. If there are any, its next job is a
+  fix, which merges the base branch and repairs what that breaks; after
+  the checks and a review of that commit it gets auto-merge. If there are
+  none, it gets auto-merge at once. A commit made after the others began
+  to wait is not asked about, since the base branch has stood still since
+  then, but for what was in the merge queue already. A person's pull
+  request is left to its author, as always.
 
-The label counts for `merge_first_limit`, 4 hours by default, from when it
-was added, so that a pull request that never gets through does not hold
-the others back for good. Remove the label and add it again to start the
-time anew. Of two labelled pull requests, the one with the lower number
-goes first, and the other waits like the rest; its own time runs
-meanwhile.
+  So it catches up once for each time that it holds the others back, and
+  the date of its latest commit decides. Nothing catches it up again with
+  what merges after that: pull requests that were in the merge queue when
+  the hold began, or another labelled pull request that merged meanwhile.
+  The merge queue's own run tests it together with those, and if that
+  fails, the removal from the queue brings a fix as for any pull request.
+  If GitHub does not answer the question, the pull request gets no job
+  until a survey has the answer, and the worker logs it; the other items
+  keep their jobs.
+
+The first approval is the reviewer App's earliest approving review, of
+whichever commit. A later commit, or a later request for changes, does
+not end the hold. GitHub marks an approval as dismissed when a new commit
+makes it stale, so the worker counts each dismissed review of the
+reviewer's as an approval of an earlier commit. The worker looks for the
+first approval among the latest 100 reviews of a pull request.
+
+A request for changes of the reviewer's that a maintainer dismisses looks
+the same, and counts as an approval from when that review was submitted,
+not from when it was dismissed. The pull request then holds the others
+back from that time, or from when the label began to count if that was
+later, so `merge_first_limit` may be partly or wholly over already.
+Once it is over, its jobs do not come before the others either, since
+that is for a pull request without an approval. A maintainer who
+dismisses such a review and wants the pull request to merge first
+removes the label and adds it again: the time then runs from the new
+label.
+
+The pull request holds the others back for `merge_first_limit`, 4 hours
+by default, from the first approval, or from when the label began to
+count if that was later, so that a pull request that never gets through
+does not hold the others back for good. To start the time anew, remove
+the label and add it again. Of two pull requests that hold the others
+back, the one with the lower number goes first, and the other waits like
+the rest; its own time runs meanwhile.
 
 On a pull request, the label counts only if a maintainer in the config's
 `maintainers` added it. From anyone else it does nothing: the agent App
@@ -235,11 +301,11 @@ either.
 **The label on an issue.** The label can also go on an issue, before
 there is a pull request. Each pull request from the project that closes
 the issue, by `Closes #N` in its description or a link made on GitHub,
-then merges first as if it had the label. Its time runs from when it was
-ready for review: from when it was opened or, if it was opened as a draft,
-from when it was first marked ready. If the issue got the label after
-that, the time runs from then. Making the pull request a draft and ready
-again does not start the time anew, unless 20 events have come since it
+is then treated as if it had the label. The label counts for it from when
+it was ready for review: from when it was opened or, if it was opened as a
+draft, from when it was first marked ready. If the issue got the label
+after that, it counts from then. Making the pull request a draft and ready
+again does not change this time, unless 20 events have come since it
 was first ready (the worker reads the latest 20). The label does not pass
 to the issue's sub-issues.
 
@@ -250,8 +316,8 @@ issue, both for three days from the label. A label on the draft itself
 gives its jobs nothing. Work is otherwise the last job that a
 worker picks, so the change would wait behind everything else while the
 others go on merging what it must then follow. This holds nothing back: the
-other pull requests stay out of the merge queue only once the pull request
-is ready for review.
+other pull requests stay out of the merge queue only once the reviewer
+has approved the pull request.
 
 On an issue the label counts from a maintainer in `maintainers`, and from
 an App in `apps` that opened the issue with the label, as a workflow does
@@ -264,15 +330,18 @@ The agents decide which pull requests close an issue, so they decide
 which ones get its label, and each gets a `merge_first_limit` of its own.
 What bounds this is a second limit: a pull request gets nothing from the
 issue if it was ready for review three days or more after the issue got
-the label. So one label on an issue holds nothing back later than three
-days and `merge_first_limit` after it was added. To end it sooner, remove
+the label. So one label on an issue passes to no pull request that is
+ready later than three days after it was added, and each one that gets
+it holds the others back once, for `merge_first_limit` at most, from the
+reviewer's first approval of it. To end it sooner, remove
 the label from the issue; a label that a maintainer put on the pull
 request itself still counts. To give such a pull request more time, label
 the pull request.
 
 `fc-worker -list` shows, for a pull request that has the label or closes
-an issue whose label counts, until when it merges first or why it does
-not. For a labelled issue it shows whether the label counts, if the issue
+an issue whose label counts, until when it merges first, that it waits
+for the reviewer's approval, or why it does not merge first. For a
+labelled issue it shows whether the label counts, if the issue
 needs a job or an open pull request closes it.
 
 While an open issue that has the label needs a job, or an open pull
@@ -281,6 +350,21 @@ when the issue is ready for a job until its pull request has merged,
 whether the label counts or not, so take a label that does not count off
 again. The worker asks who labelled ten such issues at most: those that a
 pull request closes first, and the oldest first.
+
+When the pull request that merges first would get auto-merge on a commit
+made before it began to hold the others back, a survey makes two REST
+requests more: one for the name of its base branch, which no survey
+reads, and one that compares the two. Each worker makes them once for
+such a commit if the base branch has commits that it lacks: it keeps that
+answer while it runs, since the base branch only gains commits, and does
+not ask again while the fix job runs, however often it surveys. So the
+catch-up costs two requests for each worker, not two for each survey. If
+the commit lacks nothing, the worker turns auto-merge on in the same
+step, and nobody asks after that; only a worker that surveys before then
+asks too. The requests count toward the agent App's REST limit, not
+toward its GraphQL points, which run out first. If GitHub does not answer
+them, the survey goes on without the answer: that pull request gets no
+job, the worker keeps nothing, and its next survey asks again.
 
 ## Setting up a repository
 
@@ -408,14 +492,16 @@ such as a new pull request or new sub-issues, reach the desk's surveys with
 its next sweep, within about a minute; the refreshed issue itself already
 shows its new closing pull request and sub-issues. For the same reason a
 `merge-first` label (see
-[Merging one pull request first](#merging-one-pull-request-first)) can take
-up to a minute longer to hold the others back than with surveys of GitHub:
+[Merging one pull request first](#merging-one-pull-request-first)), or the
+approval from which it holds the others back, can take up to a minute
+longer to do so than with surveys of GitHub:
 the look after a claim reads only the claimed item again.
 
 Each refresh costs the desk's GitHub App a point or so, and the agent App
 nothing. The worker still asks GitHub for its rate limits before each
-survey, for who labelled an issue `merge-first`, and for an item's comments
-after a job, and it writes to GitHub as before.
+survey, for who labelled an issue `merge-first`, once for how far the
+pull request that merges first is behind its base branch, and for an
+item's comments after a job, and it writes to GitHub as before.
 
 ### Comparing with a desk
 
@@ -454,7 +540,9 @@ sub-issues and closing pull requests and who labelled it.
 It reads no claims and writes nothing. It costs what a survey costs, and
 one point more if an issue labelled `merge-first` needs a job or an open
 pull request closes it: who labelled the issue is then asked once for each
-side.
+side. So are the two REST requests about a pull request that merges first
+and waits to catch up with its base branch, unless the first answer is
+that it lacks commits: that answer serves both sides.
 
 ### Configuration
 
@@ -507,7 +595,7 @@ unset or empty, the worker refuses to start.
 | `max_rounds` | How many rounds of any kind park an item. Default 20. |
 | `poll` | How long to wait when there is nothing to do, and after an error, give or take a quarter at random, so that workers that started together do not keep surveying together. Default `2m`. |
 | `rate_reserve` | How much of the agent App's GraphQL and REST rate limits to leave for running jobs: the worker waits while fewer points or requests remain. Default 1000; set 1 to turn the check off. |
-| `merge_first_limit` | How long a pull request labelled `merge-first` holds the others back from the merge queue, from when the label was added; for one that closes a labelled issue, from when it was ready for review, or from when the issue got the label if that was later. Default `4h`. |
+| `merge_first_limit` | How long a pull request whose label `merge-first` counts holds the others back from the merge queue, from the reviewer's first approval of it, or from when the label began to count if that was later: when it was added or, for a pull request that closes a labelled issue, when it was ready for review or when the issue got the label, whichever was later. Default `4h`. |
 | `desk` | Optional: a desk that follows the repository, as `url` and `token`, this worker's client token for it. The worker then surveys from the desk, and from GitHub only when the desk does not answer or its answer is old (see "Surveying from a desk"). Without it, the worker reads everything from GitHub. |
 | `logs` | A directory for the jobs' standard output, a file per job. The worker creates it. Without it, the output goes to the worker's own. |
 
@@ -515,7 +603,16 @@ A prompt is a Go [text/template](https://pkg.go.dev/text/template). It can
 use `{{.Repo}}` (`owner/name`), `{{.Owner}}`, `{{.Name}}`, `{{.Kind}}`
 (`issue` or `pull request`), `{{.Number}}`, `{{.Title}}`, `{{.Why}}`, why
 the item needs the job, such as "checks failed", and `{{.Deadline}}`, when
-the job will be stopped, such as "2026-11-23 20:29 UTC". Files named `_*.md`
+the job will be stopped, such as "2026-11-23 20:29 UTC". Two more are true
+or false, for `{{if .First}}…{{end}}`: `{{.First}}` for the pull request
+that [merges first](#merging-one-pull-request-first), and `{{.Leads}}` for
+an item whose jobs lead to one and so come before the others: an issue
+whose label `merge-first` counts, the agent's draft that closes it, or a
+pull request whose label counts and that the reviewer has not approved
+yet. A worker whose binary does not know a field cannot render a prompt
+that uses it: it rejects such a commit of the `prompts` repository and
+keeps the one it had. So upgrade every worker before prompts that use a
+new field merge. Files named `_*.md`
 beside a prompt are read with it, so prompts can share text:
 [prompts/_checks.md](prompts/_checks.md), the points that work, continue,
 fix and review jobs all check, is included with `{{template "_checks.md" .}}`.
@@ -590,10 +687,12 @@ name and email for its commits.
   checked tag name, never text from elsewhere. Agents can make it act
   through the code that workflows run. That gives them two things that
   they cannot do as the agent App: each issue that it opens with the label
-  `merge-first` lets their pull requests hold the others back from the
-  merge queue, for at most three days and `merge_first_limit`, and has its
-  own jobs and those of their drafts that close it picked before the
-  others for three days (see
+  `merge-first` lets each of their pull requests that is ready for review
+  within three days hold the others back from the merge queue, for at
+  most `merge_first_limit` from the reviewer's first approval of it, and
+  has its own jobs, those of their drafts that close it and those of such
+  a pull request before its approval picked before the others, for three
+  days each (see
   [Merging one pull request first](#merging-one-pull-request-first)). So
   a workflow that opens issues with this label must open them rarely, and
   by a rule that agents cannot get around: they can edit and close its

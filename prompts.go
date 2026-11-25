@@ -164,8 +164,10 @@ func (p *promptRepo) fetch(ctx context.Context) (string, error) {
 var errRender = errors.New("does not render")
 
 // check renders every job's prompt from commit, with made-up values, for an
-// issue and for a pull request, so that a commit whose prompts do not parse
-// or render is never used.
+// issue and for a pull request, each as an item like most, as one whose
+// jobs lead to a pull request that merges first, and as the one that
+// merges first, so that a commit whose prompts do not parse or render is
+// never used, whichever branch of a prompt an item takes.
 func (p *promptRepo) check(ctx context.Context, commit string) error {
 	for _, f := range p.files {
 		t, err := p.parse(ctx, commit, f)
@@ -173,8 +175,13 @@ func (p *promptRepo) check(ctx context.Context, commit string) error {
 			return fmt.Errorf("%s: %w", f, err)
 		}
 		for _, kind := range []string{"issue", "pull request"} {
-			if err := t.Execute(io.Discard, prompt{"o/r", "o", "r", kind, 1, "A title", "ready", "2026-01-01 00:00 UTC"}); err != nil {
-				return fmt.Errorf("%s %w: %w", f, errRender, err)
+			plain := prompt{Repo: "o/r", Owner: "o", Name: "r", Kind: kind, Number: 1, Title: "A title", Why: "ready", Deadline: "2026-01-01 00:00 UTC"}
+			leading, merging := plain, plain
+			leading.Leads, merging.First = true, true
+			for _, pr := range []prompt{plain, leading, merging} {
+				if err := t.Execute(io.Discard, pr); err != nil {
+					return fmt.Errorf("%s %w: %w", f, errRender, err)
+				}
 			}
 		}
 	}
