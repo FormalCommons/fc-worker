@@ -84,6 +84,7 @@ func TestAutoMerge(t *testing.T) {
 		{"the hourly rate limit, and cannot read it again", 0, hourly, "", false, true},
 		{"a secondary rate limit", http.StatusForbidden, atOnce, open, false, true},
 		{"a secondary rate limit of GraphQL", 0, tooFast, open, false, true},
+		{"a rate limit in other letters", 0, "API Rate Limit Exceeded", open, false, true},
 		{"a fault of GitHub's", 0, fault, open, false, true},
 		{"GitHub is down", http.StatusBadGateway, "Server Error", open, false, true},
 		{"a rate limit, and merged meanwhile", 0, hourly, merged, false, false},
@@ -145,6 +146,7 @@ type fakes struct {
 	stop         func()    // tells the worker to stop
 	down         bool      // GitHub answers a survey with 502
 	limited      bool      // GitHub refuses, for its rate limit, to turn on auto-merge and to read a pull request
+	limits       int       // how often GitHub was asked for its rate limits; it gives one less each time
 	other        *claims   // another worker's view of the claims
 	ran          string    // the file to which each job adds its prompt
 
@@ -209,7 +211,8 @@ func (f *fakes) serveGitHub(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/rate_limit":
-		fmt.Fprint(w, `{"resources": {"graphql": {"remaining": 5000}, "core": {"remaining": 5000}}}`)
+		fmt.Fprintf(w, `{"resources": {"graphql": {"remaining": %[1]d}, "core": {"remaining": %[1]d}}}`, 5000-f.limits)
+		f.limits++
 	case f.limited && (strings.Contains(q.Query, "enablePullRequestAutoMerge") || strings.Contains(q.Query, "pullRequest(number")):
 		fmt.Fprint(w, `{"errors": [{"type": "RATE_LIMITED", "message": "API rate limit already exceeded for installation ID 1."}]}`)
 	case strings.Contains(q.Query, "issues(states: OPEN"):
@@ -728,7 +731,7 @@ func TestStepDeskRateLimit(t *testing.T) {
 	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"pr-30"}) || len(f.parked) != 0 || len(f.comments) != 0 || f.jobs() != "" {
 		t.Errorf("claims held %v, released %v, parked %v, comments %q, jobs %q", held, released, f.parked, f.comments, f.jobs())
 	}
-	want := "pr-30: refused for GitHub's rate limit, which gave GraphQL 5000 until 00:00:00 UTC, REST 5000 until 00:00:00 UTC left when the step began and gives GraphQL 5000 until 00:00:00 UTC, REST 5000 until 00:00:00 UTC now\n"
+	want := "pr-30: refused for GitHub's rate limit, which gave GraphQL 5000 until 00:00:00 UTC, REST 5000 until 00:00:00 UTC left when the step began and gives GraphQL 4999 until 00:00:00 UTC, REST 4999 until 00:00:00 UTC now\n"
 	if !strings.Contains(out.String(), want) {
 		t.Errorf("logged %q, want a line %q", out, want)
 	}

@@ -135,10 +135,11 @@ The worker also acts on its own, without an agent:
   for a reason of the pull request's. When GitHub refused for a rate
   limit or for a fault of its own, when the request did not get an answer
   from GitHub's GraphQL at all, or when the pull request cannot be read
-  again, nothing is known of the pull request: the worker logs the
-  failure and a worker tries again after `poll`. After a rate limit's
-  refusal of any job it also logs what GitHub gave as left of its rate
-  limits when the step began and what it gives then.
+  again or is not open when read again, nothing is known of the pull
+  request: the worker logs the failure, gives the claim back and waits
+  `poll`, and whichever worker next finds the pull request tries again.
+  After a rate limit's refusal of any job it also logs what GitHub gave
+  as left of its rate limits when the step began and what it gives then.
 - It labels an item `needs-human` and says why, when
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last

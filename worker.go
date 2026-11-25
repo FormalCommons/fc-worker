@@ -369,13 +369,14 @@ func passing(err error) bool {
 
 // rateLimited reports whether err is GitHub's refusal of a request for a
 // rate limit: the hourly one, or a secondary one, of which one says only
-// that the request "was submitted too quickly". The worker has GitHub's
-// message to go by and nothing else.
+// that the request "was submitted too quickly". It goes by GitHub's
+// message, which is all that the client keeps of an answer.
 func rateLimited(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "submitted too quickly")
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "rate limit") || strings.Contains(text, "submitted too quickly")
 }
 
 // logLimits logs what GitHub gave as left of its rate limits when a step
