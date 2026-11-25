@@ -101,7 +101,8 @@ Each worker runs one job at a time:
    continue, triage, work. Within each, oldest first. The jobs of a pull
    request that [merges first](#merging-one-pull-request-first) come
    before all others, and after them the jobs that lead to such a pull
-   request: those of an issue whose label `merge-first` counts.
+   request: for three days, those of an issue whose label `merge-first`
+   counts and of the agent's draft that closes it.
 3. **Claim** the item (see [Claims](#claims)). If another worker was faster,
    pick again.
 4. **Run** the job's command, such as `podman run … hive-agent -once …`,

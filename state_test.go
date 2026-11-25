@@ -164,7 +164,7 @@ func TestFirst(t *testing.T) {
 		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 events came since"},
 		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC on 24 November"},
 		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
-		{"the agent's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft, it.Ours, it.IssueSince = true, true, since }), 0, "closes #5, labelled merge-first: a draft holds nothing back, but its jobs come before the others"},
+		{"the agent's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft, it.Ours, it.IssueSince = true, true, since }), 0, "closes an issue labelled merge-first: a draft holds nothing back, but its jobs come before the others"},
 		{"the agent's parked draft that closes a labelled issue", with(func(it *Item) {
 			*it = closes
 			it.Draft, it.Ours, it.IssueSince = true, true, since
@@ -174,9 +174,9 @@ func TestFirst(t *testing.T) {
 		{"another's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft, it.IssueSince = true, since }), 0, "closes #5, labelled merge-first, which does not count: a draft"},
 		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
 		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
-		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first, which counts until 19:00 UTC on 27 November: its jobs come before the others, and a pull request that closes it and is ready for review before then merges first"},
+		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first, which counts until 19:00 UTC on 27 November: a job of its own comes before the others, and a pull request that closes it and is ready for review before then merges first"},
 		{"an issue whose label counted", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: now.Add(-firstIssueSpan)}, 7, "labelled merge-first, which counted until 20:00 UTC on 24 November: a pull request that closes it merges first only if it was ready for review before then"},
-		{"an issue whose label does not count", Item{Number: 5, Labels: []string{mergeFirst}}, 0, "labelled merge-first: the label does not count, or the issue needs no job and no open pull request closes it"},
+		{"an issue whose label does not count", Item{Number: 5, Labels: []string{mergeFirst}}, 0, "labelled merge-first: the label does not count, or the issue needs no job and no open pull request closes it, or more than ten such issues come before it"},
 		{"it closes a labelled issue, ready too late", with(func(it *Item) { *it = closes; it.FirstSince = time.Time{} }), 0, "closes #5, labelled merge-first, which does not count: it was ready for review three days or more after the issue got the label"},
 		{"it closes a labelled issue, with a label of its own", with(func(it *Item) { it.FirstIssue = 5; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 		{"it closes a labelled issue", closes, 7, "merges first until 23:00 UTC"},
@@ -190,9 +190,6 @@ func TestFirst(t *testing.T) {
 	}
 }
 
-// TestSurveyMergeFirst checks that survey reads from GitHub's answers who
-// labelled a pull request or an issue merge-first, and when, and passes
-// an issue's label on to the pull requests that close it.
 func TestLeads(t *testing.T) {
 	now := time.Date(2026, 11, 24, 20, 0, 0, 0, time.UTC)
 	edge := now.Add(-firstIssueSpan)
@@ -219,6 +216,9 @@ func TestLeads(t *testing.T) {
 	}
 }
 
+// TestSurveyMergeFirst checks that survey reads from GitHub's answers who
+// labelled a pull request or an issue merge-first, and when, and passes
+// an issue's label on to the pull requests that close it.
 func TestSurveyMergeFirst(t *testing.T) {
 	const pr = `{"id": "PR_%[1]d", "number": %[1]d, "title": "t", "mergeable": "MERGEABLE", "createdAt": "2026-11-24T18:30:00Z",
 		"author": {"__typename": "Bot", "login": "fc-agent"},

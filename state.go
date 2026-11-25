@@ -216,15 +216,16 @@ func firstNote(it Item, f int, c *Config, now time.Time) string {
 	case !labelled && (!it.PR || it.FirstIssue == 0):
 		return ""
 	case !it.PR && it.FirstSince.IsZero():
-		return what + ": the label does not count, or the issue needs no job and no open pull request closes it"
+		return what + ": the label does not count, or the issue needs no job and no open pull request closes it, or more than ten such issues come before it"
 	case !it.PR && !leads(it, now):
 		return what + ", which counted until " + it.FirstSince.Add(firstIssueSpan).UTC().Format(day) + ": a pull request that closes it merges first only if it was ready for review before then"
 	case !it.PR:
-		return what + ", which counts until " + it.FirstSince.Add(firstIssueSpan).UTC().Format(day) + ": its jobs come before the others, and a pull request that closes it and is ready for review before then merges first"
+		return what + ", which counts until " + it.FirstSince.Add(firstIssueSpan).UTC().Format(day) + ": a job of its own comes before the others, and a pull request that closes it and is ready for review before then merges first"
 	case it.Number == f:
 		return "merges first until " + until.UTC().Format("15:04 UTC")
 	case it.Draft && leads(it, now) && !parked:
-		return what + ": a draft holds nothing back, but its jobs come before the others"
+		// The issue that gives it this need not be FirstIssue.
+		return "closes an issue labelled " + mergeFirst + ": a draft holds nothing back, but its jobs come before the others"
 	case it.Draft:
 		return no + "a draft"
 	case it.Outside:
@@ -303,9 +304,10 @@ const atOpening = time.Minute
 // workflow does with gh issue create --label. Who can make such an App
 // open an issue can so let the pull requests that close it hold the others
 // back, and have the issue's jobs picked before the others, within
-// firstIssueSpan; the worker works on the App's issues anyway. The App's label on an issue that exists already does not count,
-// nor does one that it adds again later, so that a workflow that only
-// labels issues gives nobody this.
+// firstIssueSpan; the worker works on the App's issues anyway. The App's
+// label on an issue that exists already does not count, nor does one that
+// it adds again later, so that a workflow that only labels issues gives
+// nobody this.
 func issueFirstSince(labels []string, events []event, author *actor, opened time.Time, c *Config) time.Time {
 	e := added(labels, events)
 	switch {
@@ -659,7 +661,7 @@ func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) 
 	// For each pull request, the issues that it closes whose label
 	// merge-first counts.
 	closes := map[int][]firstIssue{}
-	// If there are more than firstIssues asks about, those that a pull
+	// If there are more than maxFirstIssues, those that a pull
 	// request closes go before the others, the oldest first in each: what
 	// is held back must not depend on labels on issues without one.
 	slices.SortStableFunc(asks, func(a, b firstIssue) int {
