@@ -173,6 +173,12 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 			cand = now[i]
 		}
 		err = w.do(ctx, cand, prompts)
+		if rateLimited(err) {
+			// The step began with more than rate_reserve left, by what
+			// GitHub said then.
+			log.Printf("%s: refused for GitHub's rate limit; when the step began GitHub gave %d left for GraphQL and %d for REST",
+				key, graphql.Remaining, rest.Remaining)
+		}
 		if w.desk != nil {
 			// The next survey of any worker must show this job's work as
 			// soon as the claim is gone. This too is done when shutting
@@ -305,7 +311,10 @@ var settle = 10 * time.Second
 
 // autoMerge turns on auto-merge for a pull request, and parks it if that
 // fails. Auto-merge comes first in order, so a failure that lasts would hold
-// up every other job.
+// up every other job. It does not park for a failure that says nothing of
+// the pull request: when GitHub refuses for its rate limit, or when the
+// pull request cannot be read again. Then it returns the error, and the
+// next step tries again.
 func (w *worker) autoMerge(ctx context.Context, it Item) error {
 	err := w.gh.graphql(ctx, `mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }`,
 		map[string]any{"id": it.ID}, &struct{}{})
@@ -339,12 +348,21 @@ func (w *worker) autoMerge(ctx context.Context, it Item) error {
 	pr := r.Repository.PullRequest
 	switch {
 	case rerr != nil:
-		log.Printf("pr-%d: reading it again: %v", it.Number, rerr)
+		return fmt.Errorf("turning it on failed: %w; reading the pull request again: %w", err, rerr)
 	case pr.State == "MERGED" || pr.State == "CLOSED" || pr.IsInMergeQueue || pr.AutoMergeRequest != nil:
 		log.Printf("pr-%d: turning on auto-merge failed, but it no longer needs it: %v", it.Number, err)
 		return nil
+	case rateLimited(err):
+		return fmt.Errorf("turning it on failed: %w", err)
 	}
 	return w.park(ctx, it, "turning on auto-merge failed: "+err.Error())
+}
+
+// rateLimited reports whether err is GitHub's refusal of a request for a
+// rate limit, the hourly one or a secondary one. GitHub says so in the
+// message only: the hourly limit of GraphQL comes with status 200.
+func rateLimited(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "rate limit")
 }
 
 // Markers that begin the worker's comments. Only a marker at the start

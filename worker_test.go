@@ -54,16 +54,29 @@ func TestCountRounds(t *testing.T) {
 func TestAutoMerge(t *testing.T) {
 	t.Cleanup(func(s time.Duration) func() { return func() { settle = s } }(settle))
 	settle = 0
+	const (
+		open    = `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": null}`
+		merged  = "Pull request is already merged"
+		hourly  = "API rate limit already exceeded for installation ID 1."
+		atOnce  = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+		unknown = "Something went wrong while executing your query."
+	)
 	for _, tc := range []struct {
-		name, pr string // the pull request read again, or "" if reading it fails
-		park     bool
+		name, refusal string // what GitHub says when it does not turn auto-merge on
+		pr            string // the pull request read again, or "" if reading it fails
+		park, fails   bool
 	}{
-		{"merged meanwhile", `{"state": "MERGED", "isInMergeQueue": false, "autoMergeRequest": null}`, false},
-		{"closed meanwhile", `{"state": "CLOSED", "isInMergeQueue": false, "autoMergeRequest": null}`, false},
-		{"queued meanwhile", `{"state": "OPEN", "isInMergeQueue": true, "autoMergeRequest": null}`, false},
-		{"auto-merge on meanwhile", `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": {"enabledAt": "2026-11-18T02:00:41Z"}}`, false},
-		{"still needs auto-merge", `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": null}`, true},
-		{"cannot read it again", "", true},
+		{"merged meanwhile", merged, `{"state": "MERGED", "isInMergeQueue": false, "autoMergeRequest": null}`, false, false},
+		{"closed meanwhile", merged, `{"state": "CLOSED", "isInMergeQueue": false, "autoMergeRequest": null}`, false, false},
+		{"queued meanwhile", merged, `{"state": "OPEN", "isInMergeQueue": true, "autoMergeRequest": null}`, false, false},
+		{"auto-merge on meanwhile", merged, `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": {"enabledAt": "2026-11-18T02:00:41Z"}}`, false, false},
+		{"still needs auto-merge", unknown, open, true, false},
+		// Neither says anything of the pull request, so it is not parked.
+		{"cannot read it again", unknown, "", false, true},
+		{"the hourly rate limit", hourly, open, false, true},
+		{"the hourly rate limit, and cannot read it again", hourly, "", false, true},
+		{"a secondary rate limit", atOnce, open, false, true},
+		{"a rate limit, and merged meanwhile", hourly, `{"state": "MERGED", "isInMergeQueue": false, "autoMergeRequest": null}`, false, false},
 	} {
 		var parked bool
 		reads := 0
@@ -71,7 +84,7 @@ func TestAutoMerge(t *testing.T) {
 			body, _ := io.ReadAll(r.Body)
 			switch {
 			case r.URL.Path == "/graphql" && strings.Contains(string(body), "enablePullRequestAutoMerge"):
-				fmt.Fprint(w, `{"errors": [{"message": "Pull request is already merged"}]}`)
+				fmt.Fprintf(w, `{"errors": [{"message": %q}]}`, tc.refusal)
 			case r.URL.Path == "/graphql" && tc.pr == "":
 				reads++
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -89,8 +102,12 @@ func TestAutoMerge(t *testing.T) {
 		}))
 		g := &github{api: srv.URL, client: srv.Client(), token: "t", expires: time.Now().Add(time.Hour)}
 		w := &worker{c: &Config{Repo: "o/r", Name: "w"}, gh: g}
-		if err := w.autoMerge(context.Background(), Item{PR: true, ID: "PR_1", Number: 7}); err != nil {
-			t.Errorf("%s: %v", tc.name, err)
+		err := w.autoMerge(context.Background(), Item{PR: true, ID: "PR_1", Number: 7})
+		if (err != nil) != tc.fails {
+			t.Errorf("%s: error %v, want one: %v", tc.name, err, tc.fails)
+		}
+		if tc.fails && !strings.Contains(err.Error(), tc.refusal) {
+			t.Errorf("%s: the error %q does not have GitHub's refusal", tc.name, err)
 		}
 		if parked != tc.park || reads != 1 {
 			t.Errorf("%s: parked %v after %d reads, want parked %v after 1", tc.name, parked, reads, tc.park)
