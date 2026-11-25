@@ -536,6 +536,7 @@ func TestDeskHangs(t *testing.T) {
 	f.hang = true
 	out := logged(t)
 	ctx := context.Background()
+	start := time.Now()
 	items, fromDesk, err := w.survey(ctx)
 	if err != nil || len(items) != 1 || fromDesk || f.surveys != 1 {
 		t.Errorf("items %+v, from the desk %v, error %v, with %d surveys of GitHub", items, fromDesk, err, f.surveys)
@@ -550,6 +551,10 @@ func TestDeskHangs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "issue-12: refresh: desk: Post ") {
 		t.Errorf("logged %s", out)
+	}
+	// Each of the two waited for deskLimit and no longer.
+	if took := time.Since(start); took < 2*deskLimit || took > 5*time.Second {
+		t.Errorf("the two took %s with a limit of %s each", took, deskLimit)
 	}
 }
 

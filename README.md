@@ -365,8 +365,8 @@ with `POST /refresh`, at three points:
 
 - After it claims an item that it picked from the desk's survey. It then
   surveys again. If the item no longer needs the same job, the worker
-  releases the claim and tries the next item of its first survey;
-  otherwise it runs the job on the item as it is now.
+  releases the claim and tries the next item; otherwise it runs the job
+  on the item as it is now.
 - Before it reads the item again after the job, to see what the job
   changed.
 - Before it releases the claim after a job, so that the next survey of any

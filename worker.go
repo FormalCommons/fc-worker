@@ -126,7 +126,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	cands := candidates(items, w.c)
-	var back []string // the items whose claims this step gave back
+	var back []string // the items that this step could not claim, or gave back
 	for len(cands) > 0 {
 		cand := cands[0]
 		cands = cands[1:]
@@ -141,6 +141,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 		commit, err := w.claims.take(ctx, key, cand.job, ttl, old)
 		if err != nil {
 			log.Printf("%s: not claimed: %v", key, err)
+			back = append(back, key)
 			continue
 		}
 		if fromDesk {
@@ -162,8 +163,9 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 					// The desk could not show the item, so this survey
 					// is GitHub's and newer than the claims. The step
 					// goes on with it, and looks at none of its items
-					// again. An item given back waits for the next
-					// step: its claim is no longer as this step read it.
+					// again. An item that was not claimed or was given
+					// back waits for the next step: its claim is no
+					// longer as this step read it.
 					cands = slices.DeleteFunc(now, func(c candidate) bool { return slices.Contains(back, c.key()) })
 				}
 				continue
