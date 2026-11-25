@@ -174,10 +174,7 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 		}
 		err = w.do(ctx, cand, prompts)
 		if rateLimited(err) {
-			// The step began with more than rate_reserve left, by what
-			// GitHub said then.
-			log.Printf("%s: refused for GitHub's rate limit; when the step began GitHub gave %d left for GraphQL and %d for REST",
-				key, graphql.Remaining, rest.Remaining)
+			w.logLimits(ctx, key, graphql, rest)
 		}
 		if w.desk != nil {
 			// The next survey of any worker must show this job's work as
@@ -311,10 +308,11 @@ var settle = 10 * time.Second
 
 // autoMerge turns on auto-merge for a pull request, and parks it if that
 // fails. Auto-merge comes first in order, so a failure that lasts would hold
-// up every other job. It does not park for a failure that says nothing of
-// the pull request: when GitHub refuses for its rate limit, or when the
-// pull request cannot be read again. Then it returns the error, and the
-// next step tries again.
+// up every other job. It parks only when GitHub refused for a reason of
+// the pull request's, and the pull request, read again, is open and still
+// needs auto-merge. A failure that says nothing of the pull request, such
+// as a rate limit or a fault of GitHub's or of the network, is returned,
+// and the next step tries again.
 func (w *worker) autoMerge(ctx context.Context, it Item) error {
 	err := w.gh.graphql(ctx, `mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }`,
 		map[string]any{"id": it.ID}, &struct{}{})
@@ -352,17 +350,50 @@ func (w *worker) autoMerge(ctx context.Context, it Item) error {
 	case pr.State == "MERGED" || pr.State == "CLOSED" || pr.IsInMergeQueue || pr.AutoMergeRequest != nil:
 		log.Printf("pr-%d: turning on auto-merge failed, but it no longer needs it: %v", it.Number, err)
 		return nil
-	case rateLimited(err):
+	case passing(err):
 		return fmt.Errorf("turning it on failed: %w", err)
+	case pr.State != "OPEN":
+		return fmt.Errorf("turning it on failed: %w; read again, its state is %q", err, pr.State)
 	}
 	return w.park(ctx, it, "turning on auto-merge failed: "+err.Error())
 }
 
+// passing reports whether err says nothing of what the request was about,
+// so that the same request may succeed later. That is every error but a
+// refusal by GitHub's GraphQL, and of those the ones for a rate limit and
+// the one GitHub gives for a fault of its own.
+func passing(err error) bool {
+	var r *refusal
+	return !errors.As(err, &r) || rateLimited(err) || strings.Contains(r.message, "Something went wrong")
+}
+
 // rateLimited reports whether err is GitHub's refusal of a request for a
-// rate limit, the hourly one or a secondary one. GitHub says so in the
-// message only: the hourly limit of GraphQL comes with status 200.
+// rate limit: the hourly one, or a secondary one, of which one says only
+// that the request "was submitted too quickly". The worker has GitHub's
+// message to go by and nothing else.
 func rateLimited(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "rate limit")
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "rate limit") || strings.Contains(err.Error(), "submitted too quickly")
+}
+
+// logLimits logs what GitHub gave as left of its rate limits when a step
+// began, and what it gives now, after it refused a request of the step's
+// job on key for a rate limit. The step began only because GitHub gave
+// rate_reserve or more.
+func (w *worker) logLimits(ctx context.Context, key string, graphql, rest rateLimit) {
+	form := func(graphql, rest rateLimit) string {
+		return fmt.Sprintf("GraphQL %d until %s UTC, REST %d until %s UTC", graphql.Remaining, graphql.Reset.UTC().Format(time.TimeOnly),
+			rest.Remaining, rest.Reset.UTC().Format(time.TimeOnly))
+	}
+	now := "cannot be asked now"
+	if g, r, err := w.gh.rateLimits(context.WithoutCancel(ctx)); err != nil {
+		now += ": " + err.Error()
+	} else {
+		now = "gives " + form(g, r) + " now"
+	}
+	log.Printf("%s: refused for GitHub's rate limit, which gave %s left when the step began and %s", key, form(graphql, rest), now)
 }
 
 // Markers that begin the worker's comments. Only a marker at the start

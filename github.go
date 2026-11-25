@@ -67,10 +67,17 @@ func (g *github) graphql(ctx context.Context, query string, vars map[string]any,
 		return err
 	}
 	if len(r.Errors) > 0 {
-		return fmt.Errorf("graphql: %s", r.Errors[0].Message)
+		return &refusal{r.Errors[0].Message}
 	}
 	return json.Unmarshal(r.Data, out)
 }
+
+// refusal is GitHub's answer to a GraphQL request that reached it and
+// that it did not carry out, with its reason. A request that fails on the
+// way, or with a status outside 2xx, gives another error.
+type refusal struct{ message string }
+
+func (r *refusal) Error() string { return "graphql: " + r.message }
 
 func (g *github) call(ctx context.Context, method, url string, body, out any) error {
 	token, err := g.getToken(ctx)
