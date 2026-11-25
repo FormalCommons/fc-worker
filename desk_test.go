@@ -335,11 +335,11 @@ func TestDeskFacts(t *testing.T) {
 			Head: "ccc", Conflict: true, Checks: "FAILURE", Decision: "REVIEW_REQUIRED", Queued: true},
 		// First since it was marked ready, not since it was opened. Its
 		// removal from the queue came before its latest commit.
-		{PR: true, ID: "PR_24", Number: 24, Title: "Move the pin", FirstSince: at(16, 0, 0), FirstIssue: 16,
+		{PR: true, ID: "PR_24", Number: 24, Title: "Move the pin", FirstSince: at(16, 0, 0), FirstIssue: 16, IssueSince: at(14, 0, 2),
 			Head: "ddd", Checks: "SUCCESS", Review: "APPROVED", ReviewedAt: at(16, 30, 0), Requested: true,
 			Decision: "CHANGES_REQUESTED"},
 		// First since it was opened.
-		{PR: true, ID: "PR_25", Number: 25, Title: "Move the pin again", FirstSince: at(15, 30, 0), FirstIssue: 16,
+		{PR: true, ID: "PR_25", Number: 25, Title: "Move the pin again", FirstSince: at(15, 30, 0), FirstIssue: 16, IssueSince: at(14, 0, 2),
 			Ours: true, Head: "eee", Decision: "REVIEW_REQUIRED"},
 	}
 	for i, it := range fromDesk {
