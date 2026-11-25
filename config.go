@@ -65,8 +65,9 @@ type Config struct {
 	MergeFirstLimit duration `json:"merge_first_limit"`
 	// Desk, if set, is a desk that follows the repository: a service that
 	// keeps a copy of the open issues and pull requests and answers surveys
-	// from it. Only -compare uses it so far: the worker itself still reads
-	// everything from GitHub.
+	// from it. The worker then surveys from the desk, which costs nothing
+	// of GitHub's rate limits, and from GitHub only when the desk does not
+	// answer or its answer is old.
 	Desk *Desk `json:"desk"`
 	// Logs is a directory for the jobs' output: each job's standard output
 	// goes to a file of its own there, which the worker never deletes.

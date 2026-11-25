@@ -379,6 +379,46 @@ func TestDeskErrors(t *testing.T) {
 	}
 }
 
+// A refresh names the item to the desk. It fails unless the desk says that
+// it read that item.
+func TestDeskRefresh(t *testing.T) {
+	var got, token string
+	answer := `{"repo": "o/r", "number": 12, "state": "CLOSED", "issue": null, "pull": null}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var q struct {
+			Repo   string
+			Number int
+		}
+		json.NewDecoder(r.Body).Decode(&q)
+		got, token = fmt.Sprintf("%s %s %s#%d", r.Method, r.URL.Path, q.Repo, q.Number), r.Header.Get("Authorization")
+		if code, text, ok := strings.Cut(answer, " "); ok && len(code) == 3 {
+			var status int
+			fmt.Sscan(code, &status)
+			http.Error(w, text, status)
+			return
+		}
+		fmt.Fprint(w, answer)
+	}))
+	defer srv.Close()
+	d := newDesk(&Config{Repo: "o/r", Desk: &Desk{URL: srv.URL, Token: "desk-token"}})
+	ctx := context.Background()
+	if err := d.refresh(ctx, 12); err != nil || got != "POST /refresh o/r#12" || token != "Bearer desk-token" {
+		t.Errorf("error %v, request %q with %q", err, got, token)
+	}
+	for _, tc := range []struct{ name, answer, want string }{
+		{"GitHub fails", "502 reading #12 from GitHub failed: timeout", "desk: 502 Bad Gateway: reading #12 from GitHub failed: timeout"},
+		{"not followed", "404 o/r is not followed", "desk: 404 Not Found: o/r is not followed"},
+		{"not JSON", "<html>", "desk: invalid character '<'"},
+		{"another item", `{"repo": "o/r", "number": 13, "state": "OPEN"}`, `the answer is for #13 of "o/r"`},
+		{"another repository", `{"repo": "o/other", "number": 12, "state": "OPEN"}`, `the answer is for #12 of "o/other"`},
+	} {
+		answer = tc.answer
+		if err := d.refresh(ctx, 12); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want an error with %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 // A desk gives the issues by number. The facts have them as GitHub does,
 // the oldest first, which for a moved issue is another order.
 func TestDeskOrder(t *testing.T) {

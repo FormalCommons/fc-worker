@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -22,8 +24,14 @@ type desk struct {
 	client           *http.Client
 }
 
+// deskLimit is how long the desk has for each answer. A survey comes from
+// its copy at once, and for a refresh it reads one item from GitHub, which
+// takes a second or so. A desk that hangs must not hold a worker up for
+// longer: the worker then surveys GitHub.
+var deskLimit = 15 * time.Second
+
 func newDesk(c *Config) *desk {
-	return &desk{url: c.Desk.URL, token: c.Desk.Token, repo: c.Repo, client: &http.Client{Timeout: time.Minute}}
+	return &desk{url: c.Desk.URL, token: c.Desk.Token, repo: c.Repo, client: &http.Client{Timeout: deskLimit}}
 }
 
 // The form of a desk's answer to GET /survey. Values such as OPEN and
@@ -130,13 +138,22 @@ var eventTypenames = map[string]string{
 	"convert_to_draft": "ConvertToDraftEvent",
 }
 
-func (d *desk) facts(ctx context.Context) (*facts, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url+"/survey?repo="+url.QueryEscape(d.repo), nil)
+// call sends the desk one request and returns the body of its answer. Any
+// answer but 200 is an error.
+func (d *desk) call(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, d.url+path, rd)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+d.token)
 	req.Header.Set("User-Agent", "fc-worker")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := d.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("desk: %w", err)
@@ -154,6 +171,14 @@ func (d *desk) facts(ctx context.Context) (*facts, error) {
 		}
 		return nil, fmt.Errorf("desk: %s: %s", resp.Status, why)
 	}
+	return data, nil
+}
+
+func (d *desk) facts(ctx context.Context) (*facts, error) {
+	data, err := d.call(ctx, http.MethodGet, "/survey?repo="+url.QueryEscape(d.repo), nil)
+	if err != nil {
+		return nil, err
+	}
 	var v deskSurvey
 	if err := json.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("desk: %w", err)
@@ -165,6 +190,71 @@ func (d *desk) facts(ctx context.Context) (*facts, error) {
 		return nil, errors.New("desk: the answer does not say how old it is")
 	}
 	return v.facts(), nil
+}
+
+// refresh makes the desk read one issue or pull request from GitHub now,
+// so that its surveys show the item as it is, to this worker and to every
+// other.
+func (d *desk) refresh(ctx context.Context, number int) error {
+	body, err := json.Marshal(map[string]any{"repo": d.repo, "number": number})
+	if err != nil {
+		return err
+	}
+	data, err := d.call(ctx, http.MethodPost, "/refresh", body)
+	if err != nil {
+		return err
+	}
+	var v struct {
+		Repo   string `json:"repo"`
+		Number int    `json:"number"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return fmt.Errorf("desk: %w", err)
+	}
+	if !strings.EqualFold(v.Repo, d.repo) || v.Number != number {
+		return fmt.Errorf("desk: the answer is for #%d of %q, not for #%d of %s", v.Number, v.Repo, number, d.repo)
+	}
+	return nil
+}
+
+// deskAge is how old a desk's answer may be for a survey. A desk reads
+// what changed each minute, so one that is further behind than this has
+// stopped following GitHub.
+const deskAge = 5 * time.Minute
+
+// fallback reads the facts from the desk, if the config names one, and
+// from GitHub if the desk does not answer or its answer is older than
+// deskAge. GitHub's own facts are as of now, so a worker can take either
+// from one survey to the next.
+type fallback struct {
+	desk   *desk // nil if the config names none
+	direct direct
+	// fromDesk is whether the desk gave the facts that were read last.
+	fromDesk bool
+}
+
+func (s *fallback) facts(ctx context.Context) (*facts, error) {
+	s.fromDesk = false
+	if s.desk == nil {
+		return s.direct.facts(ctx)
+	}
+	f, err := s.desk.facts(ctx)
+	if err == nil {
+		if age := time.Since(f.AsOf); age > deskAge {
+			err = fmt.Errorf("desk: its answer is %s old", age.Round(time.Second))
+		}
+	}
+	switch {
+	case err == nil:
+		s.fromDesk = true
+		return f, nil
+	case ctx.Err() != nil:
+		// The worker is stopping, and a survey of GitHub would end the
+		// same way.
+		return nil, err
+	}
+	log.Printf("%v; surveying GitHub instead", err)
+	return s.direct.facts(ctx)
 }
 
 // facts returns a desk's answer in the form of GitHub's, and in GitHub's
