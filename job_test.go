@@ -182,8 +182,34 @@ func TestPrompts(t *testing.T) {
 			t.Fatal(err)
 		}
 		var b strings.Builder
-		if err := tmpl.Execute(&b, prompt{Repo: "o/r", Owner: "o", Name: "r", Kind: "issue", Number: 7, Title: "Do it", Why: "ready", Deadline: "2026-01-01 00:00 UTC"}); err != nil {
+		p := prompt{Repo: "o/r", Owner: "o", Name: "r", Kind: "issue", Number: 7, Title: "Do it", Why: "ready", Deadline: "2026-01-01 00:00 UTC"}
+		if err := tmpl.Execute(&b, p); err != nil {
 			t.Errorf("%s: %v", job, err)
+		}
+		// What a prompt says of a pull request that merges first, or of
+		// one that will, is for that pull request only.
+		for _, tc := range []struct {
+			job, text string
+			set       func(*prompt)
+		}{
+			{"review", "for it only when you approve it", func(p *prompt) { p.Leads = true }},
+			{"fix", "Every other approved pull request waits for this one to merge", func(p *prompt) { p.First = true }},
+		} {
+			if tc.job != job {
+				continue
+			}
+			if strings.Contains(b.String(), tc.text) {
+				t.Errorf("%s: the plain prompt says %q", job, tc.text)
+			}
+			with := p
+			tc.set(&with)
+			var w strings.Builder
+			if err := tmpl.Execute(&w, with); err != nil {
+				t.Errorf("%s: %v", job, err)
+			}
+			if !strings.Contains(w.String(), tc.text) {
+				t.Errorf("%s: the prompt of such a pull request does not say %q", job, tc.text)
+			}
 		}
 		if !strings.Contains(b.String(), "#7") {
 			t.Errorf("%s: the prompt does not name the item", job)

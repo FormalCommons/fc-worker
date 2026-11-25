@@ -55,17 +55,26 @@ func TestNext(t *testing.T) {
 		{"person's PR, a person requested changes", Item{PR: true, Checks: "SUCCESS", Requested: true}, ""},
 		{"conflict after approval", ours(Item{Conflict: true, Review: "APPROVED"}), "fix"},
 		{"conflict, approved on an earlier commit", ours(Item{Conflict: true, ApprovedSince: since}), "fix"},
-		{"label counts, conflict, not reviewed", ours(Item{Conflict: true, FirstSince: since}), "review"},
-		{"label counts, conflict, checks running", ours(Item{Conflict: true, FirstSince: since, Checks: "PENDING"}), "fix"},
-		{"label counts, conflict, no checks", Item{PR: true, Ours: true, Conflict: true, FirstSince: since}, "fix"},
-		{"label counts, conflict, checks failed", ours(Item{Conflict: true, FirstSince: since, Checks: "FAILURE"}), "fix"},
-		{"label counts, conflict, changes requested", ours(Item{Conflict: true, FirstSince: since, Review: "CHANGES_REQUESTED"}), "fix"},
-		{"label counts, conflict, a person requested changes", ours(Item{Conflict: true, FirstSince: since, Requested: true}), "fix"},
+		// Early: the label counts, the reviewer has approved no commit yet,
+		// and the label is less than three days old.
+		{"label counts, conflict, not reviewed", ours(Item{Conflict: true, FirstSince: since, Early: true}), "review"},
+		{"label counts, conflict, checks running", ours(Item{Conflict: true, FirstSince: since, Early: true, Checks: "PENDING"}), ""},
+		{"label counts, conflict, no checks", Item{PR: true, Ours: true, Conflict: true, FirstSince: since, Early: true}, "fix"},
+		{"label counts, conflict, checks expected", ours(Item{Conflict: true, FirstSince: since, Early: true, Checks: "EXPECTED"}), "fix"},
+		{"label counts, conflict, checks failed", ours(Item{Conflict: true, FirstSince: since, Early: true, Checks: "FAILURE"}), "fix"},
+		{"label counts, conflict, changes requested", ours(Item{Conflict: true, FirstSince: since, Early: true, Review: "CHANGES_REQUESTED"}), "fix"},
+		{"label counts, conflict, changes requested, checks running", ours(Item{Conflict: true, FirstSince: since, Early: true, Review: "CHANGES_REQUESTED", Checks: "PENDING"}), "fix"},
+		{"label counts, conflict, a person requested changes", ours(Item{Conflict: true, FirstSince: since, Early: true, Requested: true}), "fix"},
+		{"label counts, conflict, a person requested changes, checks running", ours(Item{Conflict: true, FirstSince: since, Early: true, Requested: true, Checks: "PENDING"}), "fix"},
+		{"label counts, no conflict, checks running", ours(Item{FirstSince: since, Early: true, Checks: "PENDING"}), ""},
+		{"label three days old, conflict, not reviewed", ours(Item{Conflict: true, FirstSince: since}), "fix"},
+		{"label three days old, conflict, checks running", ours(Item{Conflict: true, FirstSince: since, Checks: "PENDING"}), "fix"},
 		{"label counts, conflict, approved on an earlier commit", ours(Item{Conflict: true, FirstSince: since, ApprovedSince: since}), "fix"},
 		{"label counts, conflict, approved", ours(Item{Conflict: true, FirstSince: since, ApprovedSince: since, Review: "APPROVED"}), "fix"},
 		{"label counts, conflict, a draft", Item{PR: true, Draft: true, Ours: true, Conflict: true, FirstSince: since, Checks: "SUCCESS"}, "continue"},
-		{"label counts, conflict, parked", ours(Item{Conflict: true, FirstSince: since, Labels: []string{"needs-human"}}), ""},
+		{"label counts, conflict, parked", ours(Item{Conflict: true, FirstSince: since, Early: true, Labels: []string{"needs-human"}}), ""},
 		{"behind, but it does not merge first", ours(Item{Review: "APPROVED", Behind: 3}), autoMerge},
+		{"no answer on how far behind, but it does not merge first", ours(Item{Review: "APPROVED", Behind: -1}), autoMerge},
 		{"removed from queue once", ours(Item{Review: "APPROVED", Removals: 1}), autoMerge},
 		{"removed once, back in the queue", ours(Item{Review: "APPROVED", Removals: 1, Queued: true}), ""},
 		{"removed once, auto-merge on", ours(Item{Review: "APPROVED", Removals: 1, AutoMerge: true}), ""},
@@ -89,13 +98,33 @@ func TestNext(t *testing.T) {
 
 		{"person's PR, not reviewed", Item{PR: true, Checks: "SUCCESS"}, "review"},
 		{"person's PR, conflict", Item{PR: true, Conflict: true}, ""},
-		{"person's PR, label counts, conflict, not reviewed", Item{PR: true, Checks: "SUCCESS", Conflict: true, FirstSince: since}, "review"},
-		{"person's PR, label counts, conflict, changes requested", Item{PR: true, Checks: "SUCCESS", Conflict: true, FirstSince: since, Review: "CHANGES_REQUESTED"}, ""},
+		{"person's PR, label counts, conflict, not reviewed", Item{PR: true, Checks: "SUCCESS", Conflict: true, FirstSince: since, Early: true}, "review"},
+		{"person's PR, label counts, conflict, checks running", Item{PR: true, Checks: "PENDING", Conflict: true, FirstSince: since, Early: true}, ""},
+		{"person's PR, label counts, conflict, changes requested", Item{PR: true, Checks: "SUCCESS", Conflict: true, FirstSince: since, Early: true, Review: "CHANGES_REQUESTED"}, ""},
 		{"person's PR, changes requested", Item{PR: true, Checks: "SUCCESS", Review: "CHANGES_REQUESTED"}, ""},
 		{"person's PR, approved", Item{PR: true, Checks: "SUCCESS", Review: "APPROVED"}, ""},
 	} {
 		if got, why := next(tc.it, c, 0); got != tc.want {
 			t.Errorf("%s: got %q (%s), want %q", tc.name, got, why, tc.want)
+		}
+	}
+
+	// The reasons say that the conflict waits, and why.
+	const nothing = "since it holds nothing back until the reviewer has approved it"
+	for _, tc := range []struct {
+		it        Item
+		job, want string
+	}{
+		{ours(Item{Conflict: true, FirstSince: since, Early: true}), "review",
+			"latest commit not reviewed; its conflict with the base branch waits, " + nothing},
+		{ours(Item{Conflict: true, FirstSince: since, Early: true, Checks: "PENDING"}), "",
+			"waiting for checks; it conflicts with the base branch, but its review comes first, " + nothing},
+		{ours(Item{FirstSince: since, Early: true}), "review", "latest commit not reviewed"},
+		{ours(Item{FirstSince: since, Early: true, Checks: "PENDING"}), "", "waiting for checks"},
+		{ours(Item{Conflict: true, FirstSince: since}), "fix", "conflicts with the base branch"},
+	} {
+		if job, why := next(tc.it, c, 0); job != tc.job || why != tc.want {
+			t.Errorf("conflict %v, checks %s, early %v: %q (%s); want %q (%s)", tc.it.Conflict, tc.it.Checks, tc.it.Early, job, why, tc.job, tc.want)
 		}
 	}
 }
@@ -111,6 +140,7 @@ func TestNextMergeFirst(t *testing.T) {
 	}
 	const waits = "approved; waiting until #7, which merges first, has merged"
 	const lacks = "approved, and the others now wait for it to merge, but the base branch has "
+	const unknown = "approved, and the others now wait for it to merge, but GitHub did not say whether the base branch has commits that it lacks"
 	person := pr(7, Item{Review: "APPROVED", Behind: 83})
 	person.Ours = false
 	for _, tc := range []struct {
@@ -128,6 +158,10 @@ func TestNextMergeFirst(t *testing.T) {
 		{"it is behind, auto-merge on", pr(7, Item{Review: "APPROVED", Behind: 83, AutoMerge: true}), "", "approved, waiting for the merge queue"},
 		{"it is behind, its approval does not count", pr(7, Item{Review: "APPROVED", Behind: 83, Decision: "REVIEW_REQUIRED"}), park, ""},
 		{"it is behind, a person's", person, "", "approved; its author decides when to merge"},
+		{"GitHub did not say whether it is behind", pr(7, Item{Review: "APPROVED", Behind: -1}), "", unknown},
+		{"the same, and it left the queue once", pr(7, Item{Review: "APPROVED", Behind: -1, Removals: 1}), "", unknown},
+		{"the same, auto-merge on", pr(7, Item{Review: "APPROVED", Behind: -1, AutoMerge: true}), "", "approved, waiting for the merge queue"},
+		{"GitHub did not say whether another is behind", pr(8, Item{Review: "APPROVED", Behind: -1}), "", waits},
 		{"another is behind", pr(8, Item{Review: "APPROVED", Behind: 83}), "", waits},
 		{"another is approved", pr(8, Item{Review: "APPROVED"}), "", waits},
 		{"another left the queue once", pr(8, Item{Review: "APPROVED", Removals: 1}), "", waits},
@@ -232,6 +266,7 @@ func TestFirst(t *testing.T) {
 		}), 0, "closes #5, labelled merge-first, which counted until 19:00 UTC on 24 November"},
 		{"it closes a labelled issue, another goes before it", with(func(it *Item) { *it = closes; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 	} {
+		tc.it.Early = early(tc.it, now) // as the survey does
 		if got := firstNote(tc.it, tc.f, c, now); got != tc.want {
 			t.Errorf("note, %s: %q, want %q", tc.name, got, tc.want)
 		}
@@ -267,8 +302,23 @@ func TestLeads(t *testing.T) {
 		{"a pull request labelled three days ago", Item{PR: true, Ours: true, FirstSince: edge}, false},
 		{"a pull request without a label, approved or not", Item{PR: true, Ours: true}, false},
 	} {
+		tc.it.Early = early(tc.it, now) // as the survey does
 		if got := leads(tc.it, now); got != tc.want {
 			t.Errorf("%s: leads %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// The conflict rule ends with the three days too: next then sends a
+	// conflict to a fix again, whatever the checks say.
+	c := &Config{Agent: "fc-agent[bot]", Reviewer: "fc-reviewer[bot]"}
+	for _, tc := range []struct {
+		since time.Time
+		want  string
+	}{{edge.Add(time.Second), "review"}, {edge, "fix"}} {
+		it := Item{PR: true, Ours: true, Conflict: true, Checks: "SUCCESS", FirstSince: tc.since}
+		it.Early = early(it, now)
+		if job, why := next(it, c, 0); job != tc.want {
+			t.Errorf("a conflict, passing checks, labelled %v ago: %q because %q, want %q", now.Sub(tc.since), job, why, tc.want)
 		}
 	}
 }
@@ -591,6 +641,10 @@ func TestSurveyBehind(t *testing.T) {
 			fmt.Sprintf(pr, 7, label, before, dismissed+","+approved, "MERGEABLE", false, "Bot"), 83, nil, autoMerge, at(19, 30)},
 		{"approved before the label, on a commit made before the label",
 			fmt.Sprintf(pr, 7, label, "2026-11-24T18:45:00Z", fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T18:50:00Z", "h7"), "MERGEABLE", false, "Bot"), 83, both, "fix", at(18, 50)},
+		// The hold began with the label, at 19:00: the commit is older
+		// than that, though newer than the first approval.
+		{"approved before the label, on a commit made between the two",
+			fmt.Sprintf(pr, 7, label, "2026-11-24T18:55:00Z", fmt.Sprintf(review, "fc-reviewer", "DISMISSED", "2026-11-24T18:40:00Z", "old")+","+approved, "MERGEABLE", false, "Bot"), 83, both, "fix", at(18, 40)},
 		{"not approved yet",
 			fmt.Sprintf(pr, 7, label, before, "", "MERGEABLE", false, "Bot"), 83, nil, "review", time.Time{}},
 		{"approved by another App only",
@@ -687,17 +741,69 @@ func TestSurveyBehind(t *testing.T) {
 		t.Errorf("survey after merge_first_limit: asked %v, %v", asked, err)
 	}
 
-	// If GitHub does not say how far it is behind, the survey fails, so
-	// that no worker gives it auto-merge on a commit that may need to
-	// catch up.
+	// If GitHub does not say how far it is behind, it gets no job in this
+	// survey, so that no worker gives it auto-merge on a commit that may
+	// need to catch up. The others keep their jobs: 8 its review, and 9,
+	// approved, waits for 7 as before. The next survey asks again.
+	pulls = fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot") + "," +
+		fmt.Sprintf(pr, 8, "", before, "", "MERGEABLE", false, "Bot") + "," +
+		fmt.Sprintf(pr, 9, "", before, fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T20:00:00Z", "h9"), "MERGEABLE", false, "Bot")
+	jobs := func(items []Item) (jobs []string, why string) {
+		f := first(items, c, time.Now())
+		for i, it := range items {
+			job, reason := next(it, c, f)
+			if jobs = append(jobs, job); i == 0 {
+				why = reason
+			}
+		}
+		return jobs, why
+	}
+	behindBy = 83
 	for _, path := range []string{"/repos/o/r/pulls/7", "/repos/o/r/compare/release%2F1...h7"} {
 		failing, asked, g.lacking = path, nil, lacking{}
-		if items, err := survey(context.Background(), direct{g, c.Repo}, g, c); err == nil {
-			t.Errorf("survey without an answer from %s: %d items, asked %v; want an error", path, len(items), asked)
+		items, err := survey(context.Background(), direct{g, c.Repo}, g, c)
+		if err != nil {
+			t.Fatalf("survey without an answer from %s: %v", path, err)
 		}
-		if g.lacking != (lacking{}) {
-			t.Errorf("survey without an answer from %s: kept %+v; want nothing", path, g.lacking)
+		got, why := jobs(items)
+		if !slices.Equal(got, []string{"", "review", ""}) || !strings.Contains(why, "GitHub did not say whether the base branch has commits that it lacks") {
+			t.Errorf("survey without an answer from %s: jobs %q, #7 because %q; want none for #7, since GitHub did not say, and a review of #8", path, got, why)
 		}
+		if items[0].Behind != -1 || items[1].Behind != 0 || items[2].Behind != 0 || g.lacking != (lacking{}) {
+			t.Errorf("survey without an answer from %s: behind %d, %d, %d, kept %+v; want -1, 0, 0 and nothing kept", path, items[0].Behind, items[1].Behind, items[2].Behind, g.lacking)
+		}
+	}
+	failing, asked = "", nil
+	items, err = survey(context.Background(), direct{g, c.Repo}, g, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := jobs(items); !slices.Equal(got, []string{"fix", "review", ""}) || !slices.Equal(asked, both) {
+		t.Errorf("survey once GitHub answers again: jobs %q, asked %v; want a fix of #7, and %v", got, asked, both)
+	}
+
+	// A desk's facts lead to the same question, which goes to GitHub.
+	dk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"repo": "o/r", "as_of": "2026-11-24T20:10:00Z", "issues": [], "pulls": [{
+			"id": "PR_7", "number": 7, "title": "t", "created_at": "2026-11-24T18:30:00Z", "updated_at": "2026-11-24T20:00:00Z",
+			"author": {"type": "Bot", "login": "fc-agent"}, "association": "NONE",
+			"labels": ["merge-first"], "draft": false, "head": "h7", "head_committed_at": "2026-11-24T19:45:00Z",
+			"mergeable": "MERGEABLE", "checks": "SUCCESS", "review_decision": "APPROVED", "auto_merge": false, "queued": false,
+			"reviews": [{"author": {"type": "Bot", "login": "fc-reviewer"}, "association": "NONE", "state": "APPROVED",
+				"submitted_at": "2026-11-24T20:00:00Z", "commit": "h7"}],
+			"queue_removals": [],
+			"events": [{"type": "labeled", "at": "2026-11-24T19:00:00Z", "label": "merge-first", "actor": {"type": "User", "login": "maint"}}]}]}`)
+	}))
+	defer dk.Close()
+	withDesk := *c
+	withDesk.Desk = &Desk{URL: dk.URL, Token: "desk-token"}
+	asked, g.lacking = nil, lacking{}
+	items, err = survey(context.Background(), newDesk(&withDesk), g, &withDesk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := jobs(items); !slices.Equal(got, []string{"fix"}) || !slices.Equal(asked, both) || items[0].Behind != 83 {
+		t.Errorf("survey from a desk: jobs %q, asked %v, behind %d; want a fix, %v and 83", got, asked, items[0].Behind, both)
 	}
 }
 
@@ -811,7 +917,7 @@ func TestCandidates(t *testing.T) {
 	c = &Config{MergeFirstLimit: duration{4 * time.Hour}}
 	items = append(items,
 		Item{Number: 7, PR: true, Ours: true, Checks: "SUCCESS", Review: "APPROVED"},
-		Item{Number: 8, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-time.Hour)},
+		Item{Number: 8, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-time.Hour), Early: true},
 		Item{Number: 9, PR: true, Ours: true, Checks: "SUCCESS", Review: "APPROVED", Decision: "REVIEW_REQUIRED"},
 	)
 	got = nil
@@ -824,7 +930,7 @@ func TestCandidates(t *testing.T) {
 	}
 	// Once the reviewer has approved a commit of it, it merges first, and
 	// no other pull request gets auto-merge.
-	items[len(items)-2].ApprovedSince = time.Now().Add(-30 * time.Minute)
+	items[len(items)-2].ApprovedSince, items[len(items)-2].Early = time.Now().Add(-30*time.Minute), false
 	got = nil
 	for _, cand := range candidates(items, c) {
 		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
@@ -881,7 +987,7 @@ func TestCandidates(t *testing.T) {
 		{Number: 13, PR: true, Draft: true, Ours: true, FirstIssue: 10, FirstSince: hour, IssueSince: time.Now().Add(-firstIssueSpan)},
 		{Number: 14, Labels: []string{mergeFirst, "proposed"}, FirstSince: hour},
 		{Number: 15, PR: true, Ours: true, Checks: "SUCCESS", FirstIssue: 10, IssueSince: hour},
-		{Number: 16, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: hour},
+		{Number: 16, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: hour, Early: true},
 	}
 	// Each candidate says which of the two it is, for its job's prompt.
 	var firsts, leading []int

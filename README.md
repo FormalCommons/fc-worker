@@ -40,13 +40,13 @@ pull request from GitHub. The first row that matches decides:
 | Issue with an open blocker or an open sub-issue | waiting | nothing, until those close |
 | Issue that an open pull request from the project will close, or that a pull request merged less than five minutes ago will close (GitHub closes it seconds after the merge) | in review | nothing; the pull request moves it |
 | Any other open issue | ready | a **work** job |
-| Pull request whose label `merge-first` [counts](#merging-one-pull-request-first) and that the reviewer has never approved, with a conflict, passing checks, and neither a review from the reviewer nor a request for changes from a person in the project on its latest commit | needs review | a **review** job: until its approval it holds nothing back, so a fix for each new conflict would only start its checks and its review again |
+| Pull request whose label `merge-first` has [counted](#merging-one-pull-request-first) for less than three days and that the reviewer has never approved, with a conflict, with checks that are running or have passed, and with neither an approval nor a request for changes from the reviewer, nor a request for changes from a person in the project, on its latest commit | waiting, then needs review | nothing while the checks run, then a **review** job: until its approval it holds nothing back, so a fix for each new conflict would only start its checks and its review again |
 | Pull request with a conflict, failing checks, changes requested on its latest commit by the reviewer or a person in the project, or removed from the merge queue twice since its approval and its latest commit, and not back in it | needs fix | a **fix** job if the agent App opened it; otherwise its author fixes it |
 | Pull request whose mergeability GitHub is still working out, as it does after every merge | waiting | nothing, until GitHub knows |
 | Pull request whose checks are running or have not started | waiting | nothing, until they finish; without CI, forever |
 | Pull request with neither an approval nor a request for changes from the reviewer on its latest commit | needs review | a **review** job |
 | Pull request of the agent App that the reviewer approved on its latest commit, that GitHub would take, and that neither has auto-merge on nor is in the merge queue, while another pull request [merges first](#merging-one-pull-request-first) | held back | nothing, until that one has merged or has held the others back for `merge_first_limit` |
-| The pull request that merges first, if the agent App opened it, with such an approval, when its latest commit was made before it began to hold the others back and the base branch has commits that it lacks | needs fix | a **fix** job, which merges the base branch, so that it catches up once before the merge queue takes it |
+| The pull request that merges first, if the agent App opened it, with such an approval, when its latest commit was made before it began to hold the others back and the base branch has commits that it lacks | needs fix | a **fix** job, which merges the base branch, so that it catches up once before the merge queue takes it. If GitHub does not say whether it lacks any, nothing, until a survey gets the answer |
 | Pull request approved by the reviewer on its latest commit | approved | auto-merge, so the merge queue takes it, if the agent App opened it; otherwise its author decides. If GitHub does not count the approval, or a person's request for changes stands, the worker parks it. After a first removal from the merge queue since the approval and the latest commit, it turns auto-merge on again, once, since the cause may be outside the code, such as a failed download in CI |
 
 Every state either has a job or waits for something that has one, so
@@ -216,14 +216,18 @@ and not parked.
 checks, its reviews and its fixes can take hours, and if the others
 waited all that time, nothing would merge for hours. Until then:
 
-- its own jobs come before those of the others, for three days from when
-  the label began to count;
-- a conflict alone does not send it to a fix. While its checks pass and
-  its latest commit has no review, it gets its review, with the conflict:
-  the default branch still moves, and a fix for each new conflict would
-  start its checks and its review again, as above. Failed checks, a
-  request for changes, and checks that never started because of the
-  conflict lead to a fix as for any pull request.
+- its own jobs come before those of the others;
+- a conflict alone does not send it to a fix. While the checks of its
+  latest commit run, it waits for them, and when they have passed and
+  the commit has no review, it gets its review, with the conflict: the
+  default branch still moves, and a fix for each new conflict would start
+  its checks and its review again, as above. Failed checks and a request
+  for changes lead to a fix as for any pull request, and so does a
+  conflict on a commit whose checks never started, which is what a
+  conflict does to a new commit: there is nothing to wait for then.
+
+Both last for three days from when the label began to count. After that
+its jobs are picked like any others, and a conflict leads to a fix again.
 
 **From the reviewer's first approval** it merges first:
 
@@ -248,13 +252,33 @@ waited all that time, nothing would merge for hours. Until then:
   then, but for what was in the merge queue already. A person's pull
   request is left to its author, as always.
 
+  So it catches up once for each time that it holds the others back, and
+  the date of its latest commit decides. Nothing catches it up again with
+  what merges after that: pull requests that were in the merge queue when
+  the hold began, or another labelled pull request that merged meanwhile.
+  The merge queue's own run tests it together with those, and if that
+  fails, the removal from the queue brings a fix as for any pull request.
+  If GitHub does not answer the question, the pull request gets no job
+  until a survey has the answer, and the worker logs it; the other items
+  keep their jobs.
+
 The first approval is the reviewer App's earliest approving review, of
 whichever commit. A later commit, or a later request for changes, does
 not end the hold. GitHub marks an approval as dismissed when a new commit
 makes it stale, so the worker counts each dismissed review of the
-reviewer's as an approval of an earlier commit. A request for changes
-that a maintainer dismisses looks the same, and so begins the hold too.
-The worker reads the latest 100 reviews of a pull request.
+reviewer's as an approval of an earlier commit. The worker looks for the
+first approval among the latest 100 reviews of a pull request.
+
+A request for changes of the reviewer's that a maintainer dismisses looks
+the same, and counts as an approval from when that review was submitted,
+not from when it was dismissed. The pull request then holds the others
+back from that time, or from when the label began to count if that was
+later, so `merge_first_limit` may be partly or wholly over already.
+Once it is over, its jobs do not come before the others either, since
+that is for a pull request without an approval. A maintainer who
+dismisses such a review and wants the pull request to merge first
+removes the label and adds it again: the time then runs from the new
+label.
 
 The pull request holds the others back for `merge_first_limit`, 4 hours
 by default, from the first approval, or from when the label began to
@@ -339,7 +363,8 @@ the commit lacks nothing, the worker turns auto-merge on in the same
 step, and nobody asks after that; only a worker that surveys before then
 asks too. The requests count toward the agent App's REST limit, not
 toward its GraphQL points, which run out first. If GitHub does not answer
-them, the survey fails, and the worker tries again after `poll`.
+them, the survey goes on without the answer: that pull request gets no
+job, the worker keeps nothing, and its next survey asks again.
 
 ## Setting up a repository
 

@@ -1,5 +1,11 @@
 You are fixing pull request #{{.Number}} in {{.Repo}}: "{{.Title}}".
 It needs a fix because: {{.Why}}.
+{{- if .First}}
+
+Every other approved pull request waits for this one to merge. Merge the
+base branch, repair what that breaks and what the reason above names, and
+change nothing else: each further change delays all of them.
+{{- end}}
 
 If it is merged or closed (`gh pr view {{.Number}} -R {{.Repo}} --json state`), it needs
 nothing more: stop at once, and do not comment or push.

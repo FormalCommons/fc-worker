@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -52,10 +53,14 @@ type Item struct {
 	// ApprovedSince is when the reviewer first approved a commit of it,
 	// the latest or an earlier one; zero if never: see approvedSince.
 	ApprovedSince time.Time
+	// Early is set by the survey for a pull request that is ready for
+	// review, whose label merge-first counts and that the reviewer has not
+	// approved yet, for firstIssueSpan from the label: see early.
+	Early bool
 	// Behind is how many commits the base branch has that the latest
 	// commit lacks. The survey asks only for the pull request that merges
 	// first, and only when the answer decides its job; it is 0 for every
-	// other: see behind.
+	// other, and -1 if GitHub did not answer: see behind.
 	Behind int
 }
 
@@ -106,18 +111,21 @@ func next(it Item, c *Config, f int) (job, why string) {
 	}
 
 	// A pull request whose label merge-first counts holds nothing back
-	// until the reviewer has approved a commit of it, so the base branch
-	// moves all the time and gives it one conflict after another. A fix
-	// for each would start its checks and its review again and again, and
-	// the approval would never come. So a conflict alone does not stop its
-	// review: the reviewer judges the work, and the conflict is fixed
-	// after a request for changes, after failed checks, or once the
-	// approval holds the others back.
-	early := it.Conflict && !it.FirstSince.IsZero() && it.ApprovedSince.IsZero() &&
-		it.Checks == "SUCCESS" && it.Review == ""
+	// until the reviewer has approved a commit of it (see early), so the
+	// base branch moves all the time and gives it one conflict after
+	// another. A fix for each would start its checks and its review again
+	// and again, and the approval would never come. So a conflict alone
+	// stops neither its checks nor its review: while the checks of its
+	// latest commit run, it waits for them as if it had no conflict, and
+	// when they have passed, the reviewer judges the work. The conflict is
+	// fixed after a request for changes, after failed checks, or once the
+	// approval holds the others back. It is fixed at once if the checks
+	// never started, which is what a conflict does to a new commit: then
+	// there is nothing to wait for.
+	waits := it.Early && it.Conflict && it.Review == "" && (it.Checks == "SUCCESS" || it.Checks == "PENDING")
 	fix := ""
 	switch {
-	case it.Conflict && !early:
+	case it.Conflict && !waits:
 		fix = "conflicts with the base branch"
 	case it.Checks == "FAILURE" || it.Checks == "ERROR":
 		fix = "checks failed"
@@ -138,9 +146,11 @@ func next(it Item, c *Config, f int) (job, why string) {
 		// request conflicts. Until it knows, a review or auto-merge may be
 		// wasted on one that needs a fix.
 		return "", "GitHub is still checking whether it conflicts with the base branch"
+	case it.Checks != "SUCCESS" && waits:
+		return "", "waiting for checks; it conflicts with the base branch, but its review comes first, since it holds nothing back until the reviewer has approved it"
 	case it.Checks != "SUCCESS":
 		return "", "waiting for checks"
-	case it.Review == "" && early:
+	case it.Review == "" && waits:
 		return "review", "latest commit not reviewed; its conflict with the base branch waits, since it holds nothing back until the reviewer has approved it"
 	case it.Review == "":
 		return "review", "latest commit not reviewed"
@@ -160,9 +170,13 @@ func next(it Item, c *Config, f int) (job, why string) {
 	case f != 0 && f != it.Number && !it.AutoMerge && !it.Queued:
 		return "", fmt.Sprintf("approved; waiting until #%d, which merges first, has merged", f)
 	// The pull request that merges first was approved on a commit made
-	// before the others began to wait, and the base branch has moved
-	// since: see behind. A fix job merges the base branch and repairs what
-	// that breaks, before the merge queue finds it out.
+	// before the others began to wait: see behind. If GitHub did not say
+	// whether the base branch has moved since, it waits for the next
+	// survey rather than go to the merge queue as it is.
+	case f != 0 && f == it.Number && it.Behind < 0 && !it.AutoMerge && !it.Queued:
+		return "", "approved, and the others now wait for it to merge, but GitHub did not say whether the base branch has commits that it lacks"
+	// The base branch has moved since. A fix job merges it and repairs
+	// what that breaks, before the merge queue finds it out.
 	case f != 0 && f == it.Number && it.Behind > 0 && !it.AutoMerge && !it.Queued:
 		commits := "commits"
 		if it.Behind == 1 {
@@ -234,22 +248,20 @@ func first(items []Item, c *Config, now time.Time) int {
 // merge first: those of an issue whose label merge-first counts, those of
 // the agent's draft that closes such an issue, and those of a pull request
 // that is ready for review, whose label counts and that the reviewer has
-// not approved yet. All are within firstIssueSpan of the label, after
-// which a pull request that closes the issue no longer begins to merge
-// first. The workers pick them before all others but the jobs of the pull
-// request that merges first. Without this, the work on a labelled issue
-// would wait behind every other job, since work is the last in order, and
-// the others would go on merging what the change must then follow. It
-// holds nothing back: neither a draft nor a pull request without an
-// approval merges first. A label on the draft itself gives its jobs
-// nothing.
+// not approved yet: see early. All are within firstIssueSpan of the label,
+// after which a pull request that closes the issue no longer begins to
+// merge first. The workers pick them before all others but the jobs of the
+// pull request that merges first. Without this, the work on a labelled
+// issue would wait behind every other job, since work is the last in
+// order, and the others would go on merging what the change must then
+// follow. It holds nothing back: neither a draft nor a pull request
+// without an approval merges first. A label on the draft itself gives its
+// jobs nothing.
 func leads(it Item, now time.Time) bool {
 	since := it.FirstSince
 	switch {
 	case it.PR && !it.Draft:
-		if !it.ApprovedSince.IsZero() {
-			return false
-		}
+		return it.Early
 	case it.PR:
 		if !it.Ours {
 			return false
@@ -257,6 +269,21 @@ func leads(it Item, now time.Time) bool {
 		since = it.IssueSince
 	}
 	return !since.IsZero() && now.Sub(since) < firstIssueSpan
+}
+
+// early reports whether a pull request is ready for review, has a label
+// merge-first that counts, and has no approval of the reviewer's yet, less
+// than firstIssueSpan after the label began to count. Such a pull request
+// holds nothing back, but its jobs come before the others (see leads), and
+// a conflict waits for its checks and its review (see next). The span
+// bounds both alike, as it bounds what a labelled issue gives, so that a
+// pull request that never gets its approval is not ahead of the others,
+// with a conflict that nobody fixes, for good. The survey records the
+// answer on the item, as Early, since next does not know the time: so
+// next, leads and the job's prompt always agree.
+func early(it Item, now time.Time) bool {
+	return it.PR && !it.Draft && !it.FirstSince.IsZero() && it.ApprovedSince.IsZero() &&
+		now.Sub(it.FirstSince) < firstIssueSpan
 }
 
 // firstNote says, for a pull request with a label merge-first, its own or
@@ -802,6 +829,7 @@ func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) 
 				it.FirstSince, it.FirstIssue = since, fi.Number
 			}
 		}
+		it.Early = early(it, now)
 		items = append(items, it)
 	}
 	slices.SortFunc(items, func(a, b Item) int { return a.Number - b.Number })
@@ -813,7 +841,10 @@ func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) 
 		if job, _ := next(*it, c, f); job == autoMerge && it.HeadAt.Before(holdSince(*it)) {
 			n, err := behind(ctx, g, c, *it)
 			if err != nil {
-				return nil, err
+				// The jobs of the others do not depend on the
+				// answer, so the survey goes on without it.
+				log.Printf("#%d: %v; it gets no job until GitHub answers", it.Number, err)
+				n = -1
 			}
 			it.Behind = n
 		}
@@ -842,9 +873,10 @@ func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) 
 // the scarce ones: one for the base branch's name, which is not among the
 // facts, neither GitHub's nor a desk's, and one that compares base...head,
 // in whose answer behind_by counts the commits of the base that the head
-// lacks, and ahead_by those of the head that the base lacks. An error
-// fails the survey, so that no worker gives auto-merge to a pull request
-// that may need to catch up.
+// lacks, and ahead_by those of the head that the base lacks. After an
+// error the survey goes on with Behind -1, for which the pull request gets
+// no job, so that no worker gives auto-merge to one that may need to catch
+// up, and the next survey asks again; the other items keep their jobs.
 // The pull request stays in this state until the fix has pushed its
 // commit, and meanwhile every worker surveys again and again. So the
 // worker keeps an answer above 0 with the commit that it is about, in g,

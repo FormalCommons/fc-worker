@@ -340,9 +340,9 @@ func TestDeskFacts(t *testing.T) {
 		{PR: true, ID: "PR_24", Number: 24, Title: "Move the pin", FirstSince: at(16, 0, 0), FirstIssue: 16, IssueSince: at(14, 0, 2),
 			Head: "ddd", HeadAt: at(17, 0, 0), Checks: "SUCCESS", Review: "APPROVED", ReviewedAt: at(16, 30, 0), Requested: true,
 			Decision: "CHANGES_REQUESTED", ApprovedSince: at(16, 30, 0)},
-		// First since it was opened.
+		// First since it was opened, and not approved yet.
 		{PR: true, ID: "PR_25", Number: 25, Title: "Move the pin again", FirstSince: at(15, 30, 0), FirstIssue: 16, IssueSince: at(14, 0, 2),
-			Ours: true, Head: "eee", HeadAt: at(15, 30, 0), Decision: "REVIEW_REQUIRED"},
+			Ours: true, Head: "eee", HeadAt: at(15, 30, 0), Decision: "REVIEW_REQUIRED", Early: true},
 	}
 	for i, it := range fromDesk {
 		if diff := differing(want[i], it); len(diff) != 0 {

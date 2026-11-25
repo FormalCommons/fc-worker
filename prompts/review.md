@@ -17,6 +17,15 @@ Review its latest commit. Check each of these:
 Check the base branch last, just before you submit, since it may also move
 while you review. Do not push the merge. If it conflicts, or the merged
 code fails, request changes and say what breaks.
+{{- if .Leads}}
+
+This pull request is to merge before the others, and they begin to wait
+for it only when you approve it. Until then the base branch keeps moving,
+so for this review a conflict with the base branch, or a failure that
+only the merge with it shows, is not a reason to request changes: say
+what you found, and judge the pull request's own commits. After your
+approval it merges the base branch once, and that merge is reviewed.
+{{- end}}
 
 Before you submit your review, decide what to do with each suggestion you
 have. Nobody acts on a suggestion in an approved review, so:
