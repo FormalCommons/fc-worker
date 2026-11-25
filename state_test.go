@@ -548,7 +548,7 @@ func TestSurveyBehind(t *testing.T) {
 				http.Error(w, "GitHub is down", http.StatusBadGateway)
 			case r.URL.Path == "/repos/o/r/pulls/7":
 				fmt.Fprint(w, `{"number": 7, "base": {"ref": "release/1"}, "head": {"ref": "work"}}`)
-			case r.URL.EscapedPath() == "/repos/o/r/compare/release%2F1...h7":
+			case strings.HasPrefix(r.URL.EscapedPath(), "/repos/o/r/compare/release%2F1..."):
 				// GitHub compares base...head: behind_by counts the
 				// commits of the base that the head lacks.
 				fmt.Fprintf(w, `{"status": "diverged", "ahead_by": 4, "behind_by": %d}`, behindBy)
@@ -609,7 +609,8 @@ func TestSurveyBehind(t *testing.T) {
 			fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot") + "," +
 				fmt.Sprintf(pr, 8, label, before, fmt.Sprintf(review, "fc-reviewer", "APPROVED", "2026-11-24T20:00:00Z", "h8"), "MERGEABLE", false, "Bot"), 83, both, "fix", at(20, 0)},
 	} {
-		pulls, behindBy, asked = tc.pulls, tc.behindBy, nil
+		// Each case is a worker that has asked nothing yet.
+		pulls, behindBy, asked, g.lacking = tc.pulls, tc.behindBy, nil, lacking{}
 		items, err := survey(context.Background(), direct{g, c.Repo}, g, c)
 		if err != nil {
 			t.Errorf("%s: %v", tc.name, err)
@@ -632,6 +633,39 @@ func TestSurveyBehind(t *testing.T) {
 			}
 		}
 	}
+
+	// A worker keeps an answer above 0 and does not ask again about the
+	// same commit, however often it surveys while the fix job runs and
+	// whatever the base branch gains meanwhile.
+	pulls, behindBy, g.lacking = fmt.Sprintf(pr, 7, label, before, approved, "MERGEABLE", false, "Bot"), 83, lacking{}
+	again := func(what string, asks []string, want int) {
+		t.Helper()
+		asked = nil
+		items, err := survey(context.Background(), direct{g, c.Repo}, g, c)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if !slices.Equal(asked, asks) || items[0].Behind != want {
+			t.Errorf("%s: asked %v, behind %d; want %v, %d", what, asked, items[0].Behind, asks, want)
+		}
+	}
+	again("first survey", both, 83)
+	behindBy = 90
+	again("second survey of the same commit", nil, 83)
+	again("third survey of the same commit", nil, 83)
+	// A new commit, dated before the hold too, is asked about again.
+	pulls, behindBy = strings.ReplaceAll(pulls, "h7", "n7"), 5
+	renewed := []string{"GET /repos/o/r/pulls/7", "GET /repos/o/r/compare/release%2F1...n7"}
+	again("first survey of a new commit", renewed, 5)
+	again("second survey of the new commit", nil, 5)
+	// An answer of 0 is not kept: the base branch may gain a commit before
+	// auto-merge is on, and the next survey asks again.
+	pulls, behindBy = strings.ReplaceAll(pulls, "n7", "h7"), 0
+	again("first survey of a commit that lacks nothing", both, 0)
+	again("second survey of it", both, 0)
+	behindBy = 1
+	again("third survey of it, after a merge", both, 1)
+	again("fourth survey of it", nil, 1)
 
 	// The fix pushes a commit made after the pull request began to hold
 	// the others back, and the reviewer approves it: nothing is asked
@@ -657,9 +691,12 @@ func TestSurveyBehind(t *testing.T) {
 	// that no worker gives it auto-merge on a commit that may need to
 	// catch up.
 	for _, path := range []string{"/repos/o/r/pulls/7", "/repos/o/r/compare/release%2F1...h7"} {
-		failing, asked = path, nil
+		failing, asked, g.lacking = path, nil, lacking{}
 		if items, err := survey(context.Background(), direct{g, c.Repo}, g, c); err == nil {
 			t.Errorf("survey without an answer from %s: %d items, asked %v; want an error", path, len(items), asked)
+		}
+		if g.lacking != (lacking{}) {
+			t.Errorf("survey without an answer from %s: kept %+v; want nothing", path, g.lacking)
 		}
 	}
 }

@@ -327,14 +327,19 @@ whether the label counts or not, so take a label that does not count off
 again. The worker asks who labelled ten such issues at most: those that a
 pull request closes first, and the oldest first.
 
-While the pull request that merges first waits to catch up, each survey
-makes two REST requests more, one for the name of its base branch and
-one that compares the two: from when it would get auto-merge until the
-fix has pushed its commit, or until auto-merge is on if it lacks nothing.
-Every worker asks, also while the fix job runs. They count
-toward the agent App's REST limit, not toward its GraphQL points, which
-run out first. If GitHub does not answer them, the survey fails, and the
-worker tries again after `poll`.
+When the pull request that merges first would get auto-merge on a commit
+made before it began to hold the others back, a survey makes two REST
+requests more: one for the name of its base branch, which no survey
+reads, and one that compares the two. Each worker makes them once for
+such a commit if the base branch has commits that it lacks: it keeps that
+answer while it runs, since the base branch only gains commits, and does
+not ask again while the fix job runs, however often it surveys. So the
+catch-up costs two requests for each worker, not two for each survey. If
+the commit lacks nothing, the worker turns auto-merge on in the same
+step, and nobody asks after that; only a worker that surveys before then
+asks too. The requests count toward the agent App's REST limit, not
+toward its GraphQL points, which run out first. If GitHub does not answer
+them, the survey fails, and the worker tries again after `poll`.
 
 ## Setting up a repository
 
@@ -469,9 +474,9 @@ the look after a claim reads only the claimed item again.
 
 Each refresh costs the desk's GitHub App a point or so, and the agent App
 nothing. The worker still asks GitHub for its rate limits before each
-survey, for who labelled an issue `merge-first`, for how far the pull
-request that merges first is behind its base branch, and for an item's
-comments after a job, and it writes to GitHub as before.
+survey, for who labelled an issue `merge-first`, once for how far the
+pull request that merges first is behind its base branch, and for an
+item's comments after a job, and it writes to GitHub as before.
 
 ### Comparing with a desk
 
@@ -511,7 +516,8 @@ It reads no claims and writes nothing. It costs what a survey costs, and
 one point more if an issue labelled `merge-first` needs a job or an open
 pull request closes it: who labelled the issue is then asked once for each
 side. So are the two REST requests about a pull request that merges first
-and waits to catch up with its base branch.
+and waits to catch up with its base branch, unless the first answer is
+that it lacks commits: that answer serves both sides.
 
 ### Configuration
 

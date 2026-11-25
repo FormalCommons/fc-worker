@@ -839,12 +839,27 @@ func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) 
 // would bring a second such fix; max_rounds, idle_rounds and
 // merge_first_limit bound that.
 // It asks with two REST requests, since the workers' GraphQL points are
-// the scarce ones: one for the base branch's name, and one that compares
-// base...head, in whose answer behind_by counts the commits of the base
-// that the head lacks, and ahead_by those of the head that the base lacks.
-// An error fails the survey, so that no worker gives auto-merge to a pull
-// request that may need to catch up.
+// the scarce ones: one for the base branch's name, which is not among the
+// facts, neither GitHub's nor a desk's, and one that compares base...head,
+// in whose answer behind_by counts the commits of the base that the head
+// lacks, and ahead_by those of the head that the base lacks. An error
+// fails the survey, so that no worker gives auto-merge to a pull request
+// that may need to catch up.
+// The pull request stays in this state until the fix has pushed its
+// commit, and meanwhile every worker surveys again and again. So the
+// worker keeps an answer above 0 with the commit that it is about, in g,
+// and does not ask again for that commit: the base branch only gains
+// commits, so a commit that lacks some lacks them for good, and only the
+// number can grow. The reason of the fix gives the number as it was first
+// answered. An answer of 0 is not kept, since the base branch may gain a
+// commit a moment later, from the merge queue; the worker then turns
+// auto-merge on in the same step, after which nobody asks. Only the last
+// answer is kept, since one pull request merges first at a time, and a
+// worker that starts anew asks once more.
 func behind(ctx context.Context, g *github, c *Config, it Item) (int, error) {
+	if l := g.lacking; l.number == it.Number && l.head == it.Head {
+		return l.by, nil
+	}
 	var pr struct {
 		Base struct {
 			Ref string `json:"ref"`
@@ -859,6 +874,9 @@ func behind(ctx context.Context, g *github, c *Config, it Item) (int, error) {
 	// The answer lists the commits too; per_page keeps that list short.
 	if err := g.rest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/compare/%s...%s?per_page=1", c.Repo, url.PathEscape(pr.Base.Ref), it.Head), nil, &cmp); err != nil {
 		return 0, fmt.Errorf("how far #%d is behind %s: %w", it.Number, pr.Base.Ref, err)
+	}
+	if cmp.BehindBy > 0 {
+		g.lacking = lacking{it.Number, it.Head, cmp.BehindBy}
 	}
 	return cmp.BehindBy, nil
 }
