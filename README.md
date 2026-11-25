@@ -131,8 +131,15 @@ The worker also acts on its own, without an agent:
   If that fails, it looks at the pull request again ten seconds later,
   since a pull request still looks open for a few seconds after it
   merges. It parks the pull request unless it has merged, closed, joined
-  the merge queue or had auto-merge turned on meanwhile; it parks it too
-  if it cannot read it again.
+  the merge queue or had auto-merge turned on meanwhile. It parks only
+  for a reason of the pull request's. When GitHub refused for a rate
+  limit or for a fault of its own, when the request did not get an answer
+  from GitHub's GraphQL at all, or when the pull request cannot be read
+  again or is not open when read again, nothing is known of the pull
+  request: the worker logs the failure, gives the claim back and waits
+  `poll`, and whichever worker next finds the pull request tries again.
+  After a rate limit's refusal of any job it also logs what GitHub gave
+  as left of its rate limits when the step began and what it gives then.
 - It labels an item `needs-human` and says why, when
   - an item has had `idle_rounds` rounds in a row that changed nothing, or
     `max_rounds` rounds in all. Both count from when the item was last

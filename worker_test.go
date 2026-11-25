@@ -54,24 +54,52 @@ func TestCountRounds(t *testing.T) {
 func TestAutoMerge(t *testing.T) {
 	t.Cleanup(func(s time.Duration) func() { return func() { settle = s } }(settle))
 	settle = 0
+	const (
+		open    = `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": null}`
+		merged  = `{"state": "MERGED", "isInMergeQueue": false, "autoMergeRequest": null}`
+		clean   = "Pull request is in clean status"
+		hourly  = "API rate limit already exceeded for installation ID 1."
+		atOnce  = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."
+		tooFast = "was submitted too quickly"
+		fault   = "Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."
+	)
 	for _, tc := range []struct {
-		name, pr string // the pull request read again, or "" if reading it fails
-		park     bool
+		name    string
+		status  int    // the status with which GitHub does not turn auto-merge on; 0 is a GraphQL refusal, with 200
+		refusal string // and what it says
+		pr      string // the pull request read again, or "" if reading it fails
+		park    bool
+		fails   bool
 	}{
-		{"merged meanwhile", `{"state": "MERGED", "isInMergeQueue": false, "autoMergeRequest": null}`, false},
-		{"closed meanwhile", `{"state": "CLOSED", "isInMergeQueue": false, "autoMergeRequest": null}`, false},
-		{"queued meanwhile", `{"state": "OPEN", "isInMergeQueue": true, "autoMergeRequest": null}`, false},
-		{"auto-merge on meanwhile", `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": {"enabledAt": "2026-11-18T02:00:41Z"}}`, false},
-		{"still needs auto-merge", `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": null}`, true},
-		{"cannot read it again", "", true},
+		{"merged meanwhile", 0, clean, merged, false, false},
+		{"closed meanwhile", 0, clean, `{"state": "CLOSED", "isInMergeQueue": false, "autoMergeRequest": null}`, false, false},
+		{"queued meanwhile", 0, clean, `{"state": "OPEN", "isInMergeQueue": true, "autoMergeRequest": null}`, false, false},
+		{"auto-merge on meanwhile", 0, clean, `{"state": "OPEN", "isInMergeQueue": false, "autoMergeRequest": {"enabledAt": "2026-11-18T02:00:41Z"}}`, false, false},
+		{"still needs auto-merge", 0, clean, open, true, false},
+		// None of these says anything of the pull request, so it is not
+		// parked.
+		{"cannot read it again", 0, clean, "", false, true},
+		{"read again, it is not there", 0, clean, `null`, false, true},
+		{"the hourly rate limit", 0, hourly, open, false, true},
+		{"the hourly rate limit, and cannot read it again", 0, hourly, "", false, true},
+		{"a secondary rate limit", http.StatusForbidden, atOnce, open, false, true},
+		{"a secondary rate limit of GraphQL", 0, tooFast, open, false, true},
+		{"a rate limit in other letters", 0, "API Rate Limit Exceeded", open, false, true},
+		{"a fault of GitHub's", 0, fault, open, false, true},
+		{"GitHub is down", http.StatusBadGateway, "Server Error", open, false, true},
+		{"a rate limit, and merged meanwhile", 0, hourly, merged, false, false},
+		{"GitHub is down, and merged meanwhile", http.StatusBadGateway, "Server Error", merged, false, false},
 	} {
 		var parked bool
 		reads := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			switch {
+			case r.URL.Path == "/graphql" && strings.Contains(string(body), "enablePullRequestAutoMerge") && tc.status != 0:
+				w.WriteHeader(tc.status)
+				fmt.Fprintf(w, `{"message": %q}`, tc.refusal)
 			case r.URL.Path == "/graphql" && strings.Contains(string(body), "enablePullRequestAutoMerge"):
-				fmt.Fprint(w, `{"errors": [{"message": "Pull request is already merged"}]}`)
+				fmt.Fprintf(w, `{"errors": [{"message": %q}]}`, tc.refusal)
 			case r.URL.Path == "/graphql" && tc.pr == "":
 				reads++
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -89,8 +117,12 @@ func TestAutoMerge(t *testing.T) {
 		}))
 		g := &github{api: srv.URL, client: srv.Client(), token: "t", expires: time.Now().Add(time.Hour)}
 		w := &worker{c: &Config{Repo: "o/r", Name: "w"}, gh: g}
-		if err := w.autoMerge(context.Background(), Item{PR: true, ID: "PR_1", Number: 7}); err != nil {
-			t.Errorf("%s: %v", tc.name, err)
+		err := w.autoMerge(context.Background(), Item{PR: true, ID: "PR_1", Number: 7})
+		if (err != nil) != tc.fails {
+			t.Errorf("%s: error %v, want one: %v", tc.name, err, tc.fails)
+		}
+		if err != nil && !strings.Contains(err.Error(), tc.refusal) {
+			t.Errorf("%s: the error %q does not have GitHub's refusal", tc.name, err)
 		}
 		if parked != tc.park || reads != 1 {
 			t.Errorf("%s: parked %v after %d reads, want parked %v after 1", tc.name, parked, reads, tc.park)
@@ -113,6 +145,8 @@ type fakes struct {
 	stopAt       int       // the refresh, counted from 1, at which the worker is told to stop; the desk does not answer it
 	stop         func()    // tells the worker to stop
 	down         bool      // GitHub answers a survey with 502
+	limited      bool      // GitHub refuses, for its rate limit, to turn on auto-merge and to read a pull request
+	limits       int       // how often GitHub was asked for its rate limits; it gives one less each time
 	other        *claims   // another worker's view of the claims
 	ran          string    // the file to which each job adds its prompt
 
@@ -177,7 +211,10 @@ func (f *fakes) serveGitHub(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/rate_limit":
-		fmt.Fprint(w, `{"resources": {"graphql": {"remaining": 5000}, "core": {"remaining": 5000}}}`)
+		fmt.Fprintf(w, `{"resources": {"graphql": {"remaining": %[1]d}, "core": {"remaining": %[1]d}}}`, 5000-f.limits)
+		f.limits++
+	case f.limited && (strings.Contains(q.Query, "enablePullRequestAutoMerge") || strings.Contains(q.Query, "pullRequest(number")):
+		fmt.Fprint(w, `{"errors": [{"type": "RATE_LIMITED", "message": "API rate limit already exceeded for installation ID 1."}]}`)
 	case strings.Contains(q.Query, "issues(states: OPEN"):
 		f.surveys++
 		if f.jobs() == "" {
@@ -671,6 +708,32 @@ func TestStepDeskPark(t *testing.T) {
 	}
 	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"pr-30"}) || !slices.Equal(f.parked, []int{30}) {
 		t.Errorf("claims held %v, released %v, parked %v", held, released, f.parked)
+	}
+}
+
+// A worker with a desk comes to auto-merge without a request that GitHub
+// counts, so it can find the rate limit used up there, whatever GitHub
+// gave as left before. It parks nothing then, gives the claim back, and
+// logs what GitHub gave and gives.
+func TestStepDeskRateLimit(t *testing.T) {
+	t.Cleanup(func(s time.Duration) func() { return func() { settle = s } }(settle))
+	settle = 0
+	f, w := newFakes(t, 12)
+	f.limited = true
+	f.pulls = `{"id": "PR_30", "number": 30, "title": "t", "created_at": "2026-11-24T12:00:00Z", "author": {"type": "Bot", "login": "fc-agent"},
+		"labels": [], "head": "aaa", "mergeable": "MERGEABLE", "checks": "SUCCESS", "review_decision": "APPROVED",
+		"reviews": [{"author": {"type": "Bot", "login": "fc-reviewer"}, "state": "APPROVED", "submitted_at": "2026-11-24T13:00:00Z", "commit": "aaa"}]}`
+	out := logged(t)
+	found, err := w.step(context.Background())
+	if !found || !rateLimited(err) || !strings.Contains(err.Error(), "pr-30: auto-merge: ") {
+		t.Errorf("found %v, error %v, want the rate limit's refusal of auto-merge for pr-30", found, err)
+	}
+	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"pr-30"}) || len(f.parked) != 0 || len(f.comments) != 0 || f.jobs() != "" {
+		t.Errorf("claims held %v, released %v, parked %v, comments %q, jobs %q", held, released, f.parked, f.comments, f.jobs())
+	}
+	want := "pr-30: refused for GitHub's rate limit, which gave GraphQL 5000 until 00:00:00 UTC, REST 5000 until 00:00:00 UTC left when the step began and gives GraphQL 4999 until 00:00:00 UTC, REST 4999 until 00:00:00 UTC now\n"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("logged %q, want a line %q", out, want)
 	}
 }
 
