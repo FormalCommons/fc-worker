@@ -33,17 +33,21 @@ func (w *worker) survey(ctx context.Context) (items []Item, fromDesk bool, err e
 
 // fresh surveys with cand's item as GitHub has it now: the desk reads the
 // item again first. If the desk cannot, or the config names none, the
-// survey is GitHub's own.
-func (w *worker) fresh(ctx context.Context, cand candidate) ([]Item, error) {
+// survey is GitHub's own. Like survey, it reports whether the desk gave it.
+func (w *worker) fresh(ctx context.Context, cand candidate) (items []Item, fromDesk bool, err error) {
 	if w.desk != nil {
-		err := w.desk.refresh(ctx, cand.Number)
-		if err == nil {
-			items, _, err := w.survey(ctx)
-			return items, err
+		if err = w.desk.refresh(ctx, cand.Number); err == nil {
+			return w.survey(ctx)
+		}
+		if ctx.Err() != nil {
+			// The worker is stopping, and a survey of GitHub would end
+			// the same way.
+			return nil, false, err
 		}
 		log.Printf("%s: refresh: %v; surveying GitHub instead", cand.key(), err)
 	}
-	return survey(ctx, direct{w.gh, w.c.Repo}, w.gh, w.c)
+	items, err = survey(ctx, direct{w.gh, w.c.Repo}, w.gh, w.c)
+	return items, false, err
 }
 
 // candidate is an item that needs a job now.
@@ -121,7 +125,11 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, cand := range candidates(items, w.c) {
+	cands := candidates(items, w.c)
+	var back []string // the items whose claims this step gave back
+	for len(cands) > 0 {
+		cand := cands[0]
+		cands = cands[1:]
 		key, old := cand.key(), ""
 		if h, ok := held[key]; ok {
 			if time.Now().Before(h.Lease.Expires) {
@@ -139,17 +147,28 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 			// Another worker may have done this job and released its
 			// claim since the desk last read the item. Nobody else works
 			// on it now, so what it needs now is what to do.
-			now, ok, err := w.still(ctx, cand)
+			items, fromDesk, err = w.fresh(ctx, cand)
 			if err != nil {
 				w.release(ctx, cand, commit)
 				return false, err
 			}
-			if !ok {
+			now := candidates(items, w.c)
+			i := slices.IndexFunc(now, func(c candidate) bool { return c.key() == key && c.job == cand.job })
+			if i < 0 {
 				log.Printf("%s: no longer needs %s; claim given back", key, cand.job)
 				w.release(ctx, cand, commit)
+				back = append(back, key)
+				if !fromDesk {
+					// The desk could not show the item, so this survey
+					// is GitHub's and newer than the claims. The step
+					// goes on with it, and looks at none of its items
+					// again. An item given back waits for the next
+					// step: its claim is no longer as this step read it.
+					cands = slices.DeleteFunc(now, func(c candidate) bool { return slices.Contains(back, c.key()) })
+				}
 				continue
 			}
-			cand = now
+			cand = now[i]
 		}
 		err = w.do(ctx, cand, prompts)
 		if w.desk != nil {
@@ -164,22 +183,6 @@ func (w *worker) step(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	return false, nil
-}
-
-// still looks at a claimed item again, and returns it as it is now if it
-// still needs cand's job. It reports false if the item is no longer open,
-// or needs no job or another one.
-func (w *worker) still(ctx context.Context, cand candidate) (candidate, bool, error) {
-	items, err := w.fresh(ctx, cand)
-	if err != nil {
-		return cand, false, err
-	}
-	for _, now := range candidates(items, w.c) {
-		if now.key() == cand.key() && now.job == cand.job {
-			return now, true, nil
-		}
-	}
-	return cand, false, nil
 }
 
 // release ends the claim on cand's item. It does so even when shutting
@@ -246,7 +249,7 @@ func (w *worker) prompt(ctx context.Context, job, commit string) (*template.Temp
 func (w *worker) record(ctx context.Context, cand candidate, version string, jobErr error) error {
 	// A desk's copy from before the job would make a round that changed
 	// something count as one that changed nothing.
-	items, err := w.fresh(ctx, cand)
+	items, _, err := w.fresh(ctx, cand)
 	if err != nil {
 		return err
 	}

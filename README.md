@@ -352,13 +352,16 @@ A desk is a service that follows the repository on GitHub, keeps a copy of
 every open issue and pull request, and answers `GET /survey?repo=owner/name`
 from that copy, which costs nothing of GitHub's rate limits. With `desk` in
 the config, each survey of the worker is the desk's, and `-list` shows it
-too. If the desk does not answer, or its answer is more than five minutes
-old, the worker surveys GitHub that time, and logs why.
+too. If the desk does not answer within 15 seconds, or its answer is more
+than five minutes old, the worker surveys GitHub that time, and logs why.
 
-The desk's copy can be a minute behind GitHub, and so behind the claims: it
-may still show a job that another worker has done and released since. So
-the worker has the desk read one item from GitHub at once, with
-`POST /refresh`, at three points:
+The desk's copy is usually up to a minute behind GitHub, and the worker
+takes a survey whose `as_of` is up to five minutes old. What only the
+desk's full read brings, such as a sub-issue that someone else attached to
+an issue, can be ten minutes behind. So the copy can be behind the claims
+too: it may still show a job that another worker has done and released
+since. The worker therefore has the desk read one item from GitHub at once,
+with `POST /refresh`, at three points:
 
 - After it claims an item that it picked from the desk's survey. It then
   surveys again. If the item no longer needs the same job, the worker
@@ -369,14 +372,28 @@ the worker has the desk read one item from GitHub at once, with
 - Before it releases the claim after a job, so that the next survey of any
   worker shows what the job did.
 
-If the desk fails the first or the second of these, the worker surveys
-GitHub instead; if GitHub fails too after a claim, the worker releases the
-claim and runs no job. A refresh that fails before a release is only
-logged.
+So what an old copy costs is a delay, or a claim that is given back, and
+not a wrong job.
 
-The worker still asks GitHub for its rate limits before each survey, for
-who labelled an issue `merge-first`, and for an item's comments after a
-job, and it writes to GitHub as before.
+If the desk fails the first or the second of these, the worker surveys
+GitHub instead. After a claim, it then picks the rest of that step's items
+from GitHub's survey, which needs no second look; if GitHub fails too, the
+worker releases the claim and runs no job. A refresh that fails before a
+release is only logged.
+
+A refresh covers the job's own item only. Other items that a job creates,
+such as a new pull request or new sub-issues, reach the desk's surveys with
+its next sweep, within about a minute; the refreshed issue itself already
+shows its new closing pull request and sub-issues. For the same reason a
+`merge-first` label (see
+[Merging one pull request first](#merging-one-pull-request-first)) can take
+up to a minute longer to hold the others back than with surveys of GitHub:
+the look after a claim reads only the claimed item again.
+
+Each refresh costs the desk's GitHub App a point or so, and the agent App
+nothing. The worker still asks GitHub for its rate limits before each
+survey, for who labelled an issue `merge-first`, and for an item's comments
+after a job, and it writes to GitHub as before.
 
 ### Comparing with a desk
 

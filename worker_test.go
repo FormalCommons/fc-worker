@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -107,7 +108,10 @@ type fakes struct {
 	pulls        string    // the desk's open pull requests, as it gives them
 	asOf         time.Time // how old the desk says its copy is
 	noRead       bool      // the desk answers a survey with 503
+	hang         bool      // the desk takes each request and does not answer
 	failRefresh  []int     // the refreshes, counted from 1, that the desk answers with 502
+	stopAt       int       // the refresh, counted from 1, at which the worker is told to stop; the desk does not answer it
+	stop         func()    // tells the worker to stop
 	down         bool      // GitHub answers a survey with 502
 	other        *claims   // another worker's view of the claims
 	ran          string    // the file to which each job adds its prompt
@@ -115,6 +119,7 @@ type fakes struct {
 	calls     []string // the requests to the desk; a refresh with the claims held when it came
 	refreshes int
 	surveys   int      // the surveys of GitHub
+	early     int      // those of them from before any job ran
 	comments  []string // the comments made on GitHub
 	parked    []int    // the items labelled on GitHub
 }
@@ -175,6 +180,9 @@ func (f *fakes) serveGitHub(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"resources": {"graphql": {"remaining": 5000}, "core": {"remaining": 5000}}}`)
 	case strings.Contains(q.Query, "issues(states: OPEN"):
 		f.surveys++
+		if f.jobs() == "" {
+			f.early++
+		}
 		if f.down {
 			http.Error(w, `{"message": "GitHub is down"}`, http.StatusBadGateway)
 			return
@@ -202,6 +210,11 @@ func (f *fakes) serveDesk(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Header.Get("Authorization") != "Bearer desk-token":
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	case f.hang:
+		// The server sees that the worker gave up only once the body is
+		// read.
+		io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
 	case r.Method == http.MethodGet && r.URL.Path == "/survey" && r.URL.Query().Get("repo") == "o/r":
 		f.calls = append(f.calls, "survey")
 		if f.noRead {
@@ -220,6 +233,12 @@ func (f *fakes) serveDesk(w http.ResponseWriter, r *http.Request) {
 		held, _ := f.claimed()
 		f.calls = append(f.calls, strings.TrimSpace(fmt.Sprintf("refresh %d %s", q.Number, strings.Join(held, " "))))
 		f.refreshes++
+		if f.refreshes == f.stopAt {
+			f.stop()
+			io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
+			return
+		}
 		if q.Repo != "o/r" || slices.Contains(f.failRefresh, f.refreshes) {
 			http.Error(w, fmt.Sprintf("reading #%d from GitHub failed: GitHub is down", q.Number), http.StatusBadGateway)
 			return
@@ -405,11 +424,12 @@ func TestStepDeskRefreshFails(t *testing.T) {
 	if found, err := w.step(context.Background()); !found || err != nil {
 		t.Fatalf("found %v, error %v\n%s", found, err, out)
 	}
-	// One survey of GitHub for each refresh that failed: the first shows
-	// that 12 needs no work, and the second that 13 does.
-	want := []string{"survey", "refresh 12 issue-12", "refresh 13 issue-13", "refresh 13 issue-13", "survey", "refresh 13 issue-13"}
-	if !slices.Equal(f.calls, want) || f.surveys != 2 {
-		t.Errorf("asked the desk %q and surveyed GitHub %d times, want %q and 2", f.calls, f.surveys, want)
+	// One survey of GitHub for each refresh that failed. The first shows
+	// that 12 needs no work and that 13 does, so the worker does not look
+	// at 13 again once it has claimed it. The second is for the round.
+	want := []string{"survey", "refresh 12 issue-12", "refresh 13 issue-13", "refresh 13 issue-13"}
+	if !slices.Equal(f.calls, want) || f.surveys != 2 || f.early != 1 {
+		t.Errorf("asked the desk %q and surveyed GitHub %d times, %d of them before the job; want %q, 2 and 1", f.calls, f.surveys, f.early, want)
 	}
 	for _, line := range []string{
 		"issue-12: refresh: desk: 502 Bad Gateway: reading #12 from GitHub failed: GitHub is down; surveying GitHub instead\n",
@@ -426,6 +446,17 @@ func TestStepDeskRefreshFails(t *testing.T) {
 	}
 	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"issue-12", "issue-13"}) {
 		t.Errorf("claims held %v, released %v", held, released)
+	}
+
+	// An item that GitHub shows as the desk did is worked on.
+	f, w = newFakes(t, 12)
+	f.failRefresh = []int{1}
+	if found, err := w.step(context.Background()); !found || err != nil {
+		t.Errorf("found %v, error %v", found, err)
+	}
+	want = []string{"survey", "refresh 12 issue-12", "refresh 12 issue-12", "survey", "refresh 12 issue-12"}
+	if !slices.Equal(f.calls, want) || f.surveys != 1 || f.jobs() != "work 12\n" {
+		t.Errorf("asked the desk %q, surveyed GitHub %d times and ran %q; want %q, 1 and work on 12", f.calls, f.surveys, f.jobs(), want)
 	}
 
 	// With GitHub down too, the worker gives the claim back and does no
@@ -452,6 +483,127 @@ func TestStepDeskRefreshFails(t *testing.T) {
 	}
 	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"issue-12"}) || f.refreshes != 3 || f.surveys != 0 {
 		t.Errorf("claims held %v, released %v, %d refreshes, %d surveys of GitHub", held, released, f.refreshes, f.surveys)
+	}
+}
+
+// After a refresh that failed, the step goes on with GitHub's survey: it
+// does not claim each item that the desk's copy shows as ready only to
+// survey GitHub again for it.
+func TestStepDeskRefreshDown(t *testing.T) {
+	f, w := newFakes(t, 11, 12, 13, 14)
+	f.github[11] = []string{"needs-human"}
+	delete(f.github, 12)
+	f.github[13] = []string{"needs-human"}
+	f.failRefresh = []int{1, 2, 3}
+	out := logged(t)
+	if found, err := w.step(context.Background()); !found || err != nil {
+		t.Fatalf("found %v, error %v\n%s", found, err, out)
+	}
+	// One survey of GitHub before the job, after the claim on 11, and one
+	// to record the round.
+	want := []string{"survey", "refresh 11 issue-11", "refresh 14 issue-14", "refresh 14 issue-14"}
+	if !slices.Equal(f.calls, want) || f.surveys != 2 || f.early != 1 {
+		t.Errorf("asked the desk %q and surveyed GitHub %d times, %d of them before the job; want %q, 2 and 1", f.calls, f.surveys, f.early, want)
+	}
+	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"issue-11", "issue-14"}) || f.jobs() != "work 14\n" {
+		t.Errorf("claims held %v, released %v, jobs %q; want claims on 11 and 14 only, and work on 14", held, released, f.jobs())
+	}
+
+	// 11 is given back since it needs another job now. GitHub's survey,
+	// made for 12, shows that too, but the step does not claim 11 again.
+	f, w = newFakes(t, 11, 12, 13)
+	f.github[11] = []string{"proposed"}
+	f.github[12] = []string{"needs-human"}
+	f.failRefresh = []int{2}
+	if found, err := w.step(context.Background()); !found || err != nil {
+		t.Fatalf("found %v, error %v\n%s", found, err, out)
+	}
+	want = []string{"survey", "refresh 11 issue-11", "survey", "refresh 12 issue-12", "refresh 13 issue-13", "survey", "refresh 13 issue-13"}
+	if !slices.Equal(f.calls, want) || f.surveys != 1 || f.jobs() != "work 13\n" {
+		t.Errorf("asked the desk %q, surveyed GitHub %d times and ran %q; want %q, 1 and work on 13", f.calls, f.surveys, f.jobs(), want)
+	}
+	if strings.Contains(out.String(), "not claimed") {
+		t.Errorf("tried a claim that it could not take:\n%s", out)
+	}
+}
+
+// A desk that takes a request and does not answer holds the worker up for
+// deskLimit, and then the survey is GitHub's.
+func TestDeskHangs(t *testing.T) {
+	t.Cleanup(func(d time.Duration) func() { return func() { deskLimit = d } }(deskLimit))
+	deskLimit = 50 * time.Millisecond
+	f, w := newFakes(t, 12)
+	f.hang = true
+	out := logged(t)
+	ctx := context.Background()
+	items, fromDesk, err := w.survey(ctx)
+	if err != nil || len(items) != 1 || fromDesk || f.surveys != 1 {
+		t.Errorf("items %+v, from the desk %v, error %v, with %d surveys of GitHub", items, fromDesk, err, f.surveys)
+	}
+	if got := out.String(); !strings.HasPrefix(got, "desk: Get ") || strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "; surveying GitHub instead\n") {
+		t.Errorf("logged %q", got)
+	}
+	// So is the survey after a refresh.
+	items, fromDesk, err = w.fresh(ctx, candidate{Item: Item{Number: 12}})
+	if err != nil || len(items) != 1 || fromDesk || f.surveys != 2 {
+		t.Errorf("after a refresh: items %+v, from the desk %v, error %v, with %d surveys of GitHub", items, fromDesk, err, f.surveys)
+	}
+	if !strings.Contains(out.String(), "issue-12: refresh: desk: Post ") {
+		t.Errorf("logged %s", out)
+	}
+}
+
+// A worker that is told to stop during its job has the desk read the item
+// and releases the claim all the same.
+func TestStepDeskStopsInJob(t *testing.T) {
+	f, w := newFakes(t, 12)
+	job := w.c.Jobs["work"]
+	job.Command = []string{"sh", "-c", `cat "$1" >> ` + f.ran + `; exec sleep 30`, "sh", "{prompt}"}
+	w.c.Jobs["work"] = job
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for f.jobs() == "" && ctx.Err() == nil {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}()
+	found, err := w.step(ctx)
+	if !found || err == nil || !strings.Contains(err.Error(), "issue-12: work: ") {
+		t.Errorf("found %v, error %v; want the error of a job that was stopped", found, err)
+	}
+	// No round is recorded, but the claim is still held at the last
+	// refresh.
+	want := []string{"survey", "refresh 12 issue-12", "survey", "refresh 12 issue-12"}
+	if !slices.Equal(f.calls, want) || f.surveys != 0 || len(f.comments) != 0 {
+		t.Errorf("asked the desk %q, surveyed GitHub %d times, comments %q; want %q, 0 and none", f.calls, f.surveys, f.comments, want)
+	}
+	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"issue-12"}) || f.jobs() != "work 12\n" {
+		t.Errorf("claims held %v, released %v, jobs %q", held, released, f.jobs())
+	}
+}
+
+// A worker that is told to stop while the desk reads the item that it just
+// claimed gives the claim back, and neither surveys GitHub nor runs a job.
+func TestStepDeskStopsInRefresh(t *testing.T) {
+	f, w := newFakes(t, 12)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.stopAt, f.stop = 1, cancel
+	out := logged(t)
+	found, err := w.step(ctx)
+	if found || !errors.Is(err, context.Canceled) {
+		t.Errorf("found %v, error %v; want the error of a request that was stopped", found, err)
+	}
+	want := []string{"survey", "refresh 12 issue-12"}
+	if !slices.Equal(f.calls, want) || f.surveys != 0 || f.jobs() != "" {
+		t.Errorf("asked the desk %q, surveyed GitHub %d times and ran %q; want %q, 0 and no job", f.calls, f.surveys, f.jobs(), want)
+	}
+	if held, released := f.claimed(); len(held) != 0 || !slices.Equal(released, []string{"issue-12"}) {
+		t.Errorf("claims held %v, released %v", held, released)
+	}
+	if strings.Contains(out.String(), "surveying GitHub instead") {
+		t.Errorf("logged %s", out)
 	}
 }
 

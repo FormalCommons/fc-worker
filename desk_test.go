@@ -408,7 +408,7 @@ func TestDeskRefresh(t *testing.T) {
 	for _, tc := range []struct{ name, answer, want string }{
 		{"GitHub fails", "502 reading #12 from GitHub failed: timeout", "desk: 502 Bad Gateway: reading #12 from GitHub failed: timeout"},
 		{"not followed", "404 o/r is not followed", "desk: 404 Not Found: o/r is not followed"},
-		{"not JSON", "<html>", "desk: "},
+		{"not JSON", "<html>", "desk: invalid character '<'"},
 		{"another item", `{"repo": "o/r", "number": 13, "state": "OPEN"}`, `the answer is for #13 of "o/r"`},
 		{"another repository", `{"repo": "o/other", "number": 12, "state": "OPEN"}`, `the answer is for #12 of "o/other"`},
 	} {

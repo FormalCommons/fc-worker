@@ -24,8 +24,14 @@ type desk struct {
 	client           *http.Client
 }
 
+// deskLimit is how long the desk has for each answer. A survey comes from
+// its copy at once, and for a refresh it reads one item from GitHub, which
+// takes a second or so. A desk that hangs must not hold a worker up for
+// longer: the worker then surveys GitHub.
+var deskLimit = 15 * time.Second
+
 func newDesk(c *Config) *desk {
-	return &desk{url: c.Desk.URL, token: c.Desk.Token, repo: c.Repo, client: &http.Client{Timeout: time.Minute}}
+	return &desk{url: c.Desk.URL, token: c.Desk.Token, repo: c.Repo, client: &http.Client{Timeout: deskLimit}}
 }
 
 // The form of a desk's answer to GET /survey. Values such as OPEN and
@@ -186,17 +192,10 @@ func (d *desk) facts(ctx context.Context) (*facts, error) {
 	return v.facts(), nil
 }
 
-// refreshLimit is how long the desk has to answer a refresh. It reads one
-// item from GitHub for it, which takes a second or so, and the release of a
-// claim waits for the answer.
-const refreshLimit = 15 * time.Second
-
 // refresh makes the desk read one issue or pull request from GitHub now,
 // so that its surveys show the item as it is, to this worker and to every
 // other.
 func (d *desk) refresh(ctx context.Context, number int) error {
-	ctx, cancel := context.WithTimeout(ctx, refreshLimit)
-	defer cancel()
 	body, err := json.Marshal(map[string]any{"repo": d.repo, "number": number})
 	if err != nil {
 		return err
