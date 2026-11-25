@@ -17,8 +17,8 @@ type Item struct {
 	Labels  []string
 	Outside bool // opened by someone outside the project
 	// FirstSince is since when a pull request merges first, or since when
-	// the label merge-first counts on an issue that an open pull request
-	// closes; zero if neither: see survey.
+	// the label merge-first counts on an issue that needs a job or that an
+	// open pull request closes; zero if neither: see survey.
 	FirstSince time.Time
 
 	// Issues only.
@@ -50,7 +50,7 @@ const (
 )
 
 // mergeFirst labels a pull request that merges before all others, or an
-// issue whose pull request does: see first.
+// issue whose pull request does: see first and leads.
 const mergeFirst = "merge-first"
 
 // next returns the job an item needs, or "" if it needs none now, and why.
@@ -173,6 +173,24 @@ func first(items []Item, c *Config, now time.Time) int {
 	return 0
 }
 
+// leads reports whether an item's jobs lead to a pull request that will
+// merge first: those of an issue whose label merge-first counts, within
+// firstIssueSpan of the label, and those of the agent's draft that closes
+// such an issue. The workers pick them before all others but the jobs of
+// the pull request that merges first. Without this, the work on a labelled
+// issue would wait behind every other job, since work is the last in order,
+// and the others would go on merging what the change must then follow. It
+// holds nothing back: a draft does not merge first.
+func leads(it Item, now time.Time) bool {
+	switch {
+	case it.FirstSince.IsZero():
+		return false
+	case !it.PR:
+		return now.Sub(it.FirstSince) < firstIssueSpan
+	}
+	return it.Draft && it.Ours && it.FirstIssue != 0
+}
+
 // firstNote says, for a pull request with a label merge-first, its own or
 // that of an issue that it closes, until when it merges first, or why it
 // does not, and for an issue with the label, whether the label counts. It
@@ -189,11 +207,13 @@ func firstNote(it Item, f int, c *Config, now time.Time) string {
 	case !labelled && (!it.PR || it.FirstIssue == 0):
 		return ""
 	case !it.PR && it.FirstSince.IsZero():
-		return what + ": no open pull request closes it, or the label does not count"
+		return what + ": the label does not count, or the issue needs no job and no open pull request closes it"
 	case !it.PR:
-		return what + ", which counts for a pull request that closes it"
+		return what + ", which counts: its jobs come before the others for three days, and a pull request that closes it merges first"
 	case it.Number == f:
 		return "merges first until " + until.UTC().Format("15:04 UTC")
+	case it.Draft && leads(it, now):
+		return what + ": a draft holds nothing back, but its jobs come before the others"
 	case it.Draft:
 		return no + "a draft"
 	case it.Outside:
@@ -316,8 +336,8 @@ func ready(opened time.Time, events []event) time.Time {
 // It is long enough for a pull request that takes many jobs to get ready.
 const firstIssueSpan = 72 * time.Hour
 
-// firstIssue is an open issue labelled merge-first that an open pull
-// request closes.
+// firstIssue is an open issue labelled merge-first that needs a job or
+// that an open pull request closes.
 type firstIssue struct {
 	Number int
 	Author *actor
@@ -345,7 +365,8 @@ func firstIssuesQuery(issues []firstIssue) string {
 // firstIssues sets Since for the given issues, at most maxFirstIssues of
 // them, the oldest. Who added a label is not in the survey of all issues,
 // where it would cost a point more for each page, so survey asks here, and
-// only about labelled issues that an open pull request closes.
+// only about labelled issues that need a job or that an open pull request
+// closes.
 func firstIssues(ctx context.Context, g *github, c *Config, issues []firstIssue) error {
 	owner, name, _ := strings.Cut(c.Repo, "/")
 	if len(issues) > maxFirstIssues {
@@ -598,7 +619,8 @@ func survey(ctx context.Context, src source, g *github, c *Config) ([]Item, erro
 // merge-first is not among the facts, so it asks GitHub: see firstIssues.
 func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) ([]Item, error) {
 	var items []Item
-	// The issues labelled merge-first that an open pull request closes.
+	// The issues labelled merge-first that need a job or that an open pull
+	// request closes.
 	var asks []firstIssue
 	for _, n := range f.Issues {
 		it := Item{
@@ -615,7 +637,8 @@ func (f *facts) items(ctx context.Context, g *github, c *Config, now time.Time) 
 					fi.PRs = append(fi.PRs, pr.Number)
 				}
 			}
-			if len(fi.PRs) > 0 {
+			// An issue's job does not depend on what merges first.
+			if job, _ := next(it, c, 0); job != "" || len(fi.PRs) > 0 {
 				asks = append(asks, fi)
 			}
 		}

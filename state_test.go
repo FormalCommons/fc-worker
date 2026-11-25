@@ -164,10 +164,12 @@ func TestFirst(t *testing.T) {
 		{"the label does not count", with(func(it *Item) { it.FirstSince = time.Time{} }), 0, no + "no maintainer in the config added it, or 20 events came since"},
 		{"labelled too long ago", with(func(it *Item) { it.FirstSince = now.Add(-4 * time.Hour) }), 0, "labelled merge-first, which counted until 20:00 UTC on 24 November"},
 		{"draft", with(func(it *Item) { it.Draft = true }), 0, no + "a draft"},
+		{"the agent's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft, it.Ours = true, true }), 0, "closes #5, labelled merge-first: a draft holds nothing back, but its jobs come before the others"},
+		{"another's draft that closes a labelled issue", with(func(it *Item) { *it = closes; it.Draft = true }), 0, "closes #5, labelled merge-first, which does not count: a draft"},
 		{"from outside", with(func(it *Item) { it.Outside = true }), 0, no + "from outside the project"},
 		{"parked", with(func(it *Item) { it.Labels = []string{mergeFirst, "needs-human"} }), 0, no + "parked"},
-		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first, which counts for a pull request that closes it"},
-		{"an issue whose label does not count", Item{Number: 5, Labels: []string{mergeFirst}}, 0, "labelled merge-first: no open pull request closes it, or the label does not count"},
+		{"an issue whose label counts", Item{Number: 5, Labels: []string{mergeFirst}, FirstSince: since}, 7, "labelled merge-first, which counts: its jobs come before the others for three days, and a pull request that closes it merges first"},
+		{"an issue whose label does not count", Item{Number: 5, Labels: []string{mergeFirst}}, 0, "labelled merge-first: the label does not count, or the issue needs no job and no open pull request closes it"},
 		{"it closes a labelled issue, ready too late", with(func(it *Item) { *it = closes; it.FirstSince = time.Time{} }), 0, "closes #5, labelled merge-first, which does not count: it was ready for review three days or more after the issue got the label"},
 		{"it closes a labelled issue, with a label of its own", with(func(it *Item) { it.FirstIssue = 5; it.Number = 9 }), 7, "closes #5, labelled merge-first; #7 goes before it"},
 		{"it closes a labelled issue", closes, 7, "merges first until 23:00 UTC"},
@@ -278,9 +280,11 @@ func TestSurveyMergeFirst(t *testing.T) {
 	// repository. The labels of 4, 6 and 21 do not count: the agent App
 	// added the first, the workflow added the second an hour after it
 	// opened the issue, and the third is on the agent App's issue. 8
-	// closes these. Nothing open closes 5. A maintainer labelled 22 at
-	// 20:00, which 9 and 14 close; 23 more than three days before 13,
-	// which closes it, was opened; and 24 less than three days before 16.
+	// closes these. Nothing open closes 5, which the workflow opened with
+	// the label too, so it needs work; nor 25, which is parked and needs no
+	// job. A maintainer labelled 22 at 20:00, which 9 and 14 close; 23 more
+	// than three days before 13, which closes it, was opened; and 24 less
+	// than three days before 16.
 	opened := "2026-11-24T17:00:00Z"
 	issues = strings.Join([]string{
 		fmt.Sprintf(issue, 2, opened, "github-actions", `{"name": "other"}`, refs("o/r", "OPEN", 15)),
@@ -292,10 +296,12 @@ func TestSurveyMergeFirst(t *testing.T) {
 		fmt.Sprintf(issue, 22, opened, "fc-agent", label, refs("o/r", "OPEN", 9, 14)),
 		fmt.Sprintf(issue, 23, "2026-11-21T09:00:00Z", "fc-agent", label, refs("o/r", "OPEN", 13)),
 		fmt.Sprintf(issue, 24, "2026-11-21T09:00:00Z", "fc-agent", label, refs("o/r", "OPEN", 16)),
+		fmt.Sprintf(issue, 25, opened, "github-actions", label+`, {"name": "needs-human"}`, ""),
 	}, ",")
 	addings = strings.Join([]string{
 		fmt.Sprintf(adding, 3, "2026-11-24T17:00:02Z", "Bot", "github-actions"),
 		fmt.Sprintf(adding, 4, "2026-11-24T17:00:02Z", "Bot", "fc-agent"),
+		fmt.Sprintf(adding, 5, "2026-11-24T17:00:02Z", "Bot", "github-actions"),
 		fmt.Sprintf(adding, 6, "2026-11-24T18:00:00Z", "Bot", "github-actions"),
 		fmt.Sprintf(adding, 21, "2026-11-24T17:00:02Z", "Bot", "github-actions"),
 		fmt.Sprintf(adding, 22, "2026-11-24T20:00:00Z", "User", "maint"),
@@ -303,7 +309,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 		fmt.Sprintf(adding, 24, "2026-11-21T18:30:01Z", "User", "maint"),
 	}, ",")
 	items, err = survey(context.Background(), direct{g, c.Repo}, g, c)
-	if err != nil || len(items) != 19 || len(asked) != 1 {
+	if err != nil || len(items) != 20 || len(asked) != 1 {
 		t.Fatalf("survey with labelled issues: %d items, asked %d times, %v", len(items), len(asked), err)
 	}
 	var aliases []string
@@ -315,7 +321,7 @@ func TestSurveyMergeFirst(t *testing.T) {
 			}
 		}
 	}
-	if want := []string{"i3", "i4", "i6", "i21", "i22", "i23", "i24"}; !slices.Equal(aliases, want) {
+	if want := []string{"i3", "i4", "i5", "i6", "i21", "i22", "i23", "i24"}; !slices.Equal(aliases, want) {
 		t.Errorf("asked about %v, want %v", aliases, want)
 	}
 	m = byNumber(items)
@@ -328,7 +334,8 @@ func TestSurveyMergeFirst(t *testing.T) {
 		{"an issue with another label", 2, time.Time{}, 0},
 		{"an issue that a workflow opened with the label", 3, at(17, 0, 2), 0},
 		{"an issue labelled by the agent App", 4, time.Time{}, 0},
-		{"a labelled issue that nothing open closes", 5, time.Time{}, 0},
+		{"a labelled issue that needs work, which nothing open closes", 5, at(17, 0, 2), 0},
+		{"a labelled issue that needs no job, which nothing open closes", 25, time.Time{}, 0},
 		{"an issue that a workflow labelled after opening it", 6, time.Time{}, 0},
 		{"the agent App's issue, labelled by a workflow", 21, time.Time{}, 0},
 		{"an issue labelled by a maintainer", 22, at(20, 0, 0), 0},
@@ -518,6 +525,41 @@ func TestCandidates(t *testing.T) {
 	want = []string{"review 8", "park 9", "fix 5", "review 4", "continue 3", "continue 6", "triage 2"}
 	if !slices.Equal(got, want) {
 		t.Errorf("candidates with a pull request that closes a labelled issue %v, want %v", got, want)
+	}
+
+	// The jobs that lead to a pull request that merges first come next:
+	// those of an issue whose label counts, for three days, and those of
+	// the agent's draft that closes such an issue.
+	hour := time.Now().Add(-time.Hour)
+	items = []Item{
+		{Number: 1},
+		{Number: 2, Labels: []string{"proposed"}},
+		{Number: 3, PR: true, Draft: true, Ours: true},
+		{Number: 4, PR: true, Ours: true, Checks: "SUCCESS"},
+		{Number: 5, Labels: []string{mergeFirst}, FirstSince: hour},
+		{Number: 6, PR: true, Draft: true, Ours: true, FirstIssue: 10, FirstSince: hour},
+		{Number: 7, Labels: []string{mergeFirst}},
+		{Number: 8, Labels: []string{mergeFirst}, FirstSince: time.Now().Add(-firstIssueSpan)},
+		{Number: 9, PR: true, Ours: true, Checks: "SUCCESS", Labels: []string{mergeFirst}, FirstSince: hour},
+		{Number: 11, PR: true, Draft: true, FirstIssue: 10, FirstSince: hour},
+		{Number: 12, PR: true, Draft: true, Ours: true, Labels: []string{mergeFirst}, FirstSince: hour},
+	}
+	got = nil
+	for _, cand := range candidates(items, c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
+	want = []string{"review 9", "continue 6", "work 5", "review 4", "continue 3", "continue 12", "triage 2", "work 1", "work 7", "work 8"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates with jobs that lead to a pull request that merges first %v, want %v", got, want)
+	}
+	// Without a pull request that merges first, they come before all.
+	got = nil
+	for _, cand := range candidates(items[:8], c) {
+		got = append(got, fmt.Sprintf("%s %d", cand.job, cand.Number))
+	}
+	want = []string{"continue 6", "work 5", "review 4", "continue 3", "triage 2", "work 1", "work 7", "work 8"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates with jobs that lead to a pull request that will merge first %v, want %v", got, want)
 	}
 }
 

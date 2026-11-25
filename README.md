@@ -187,7 +187,7 @@ up to a minute, while the claim is still the worker's.
 | `proposed` | An agent created this issue. A triage job checks it before anyone works on it. |
 | `close-proposed` | An agent says this issue needs no code. A triage job checks that before it is closed. |
 | `needs-human` | The worker stopped working on this. The comment above says why. Remove the label to hand it back. |
-| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer, or from an App in `apps` that opens the issue with it: each pull request that closes it does. See [below](#merging-one-pull-request-first). |
+| `merge-first` | On a pull request, from a maintainer: this one merges before all others. On an issue, from a maintainer, or from an App in `apps` that opens the issue with it: each pull request that closes it does, and the issue's own jobs come before the others. See [below](#merging-one-pull-request-first). |
 
 People in the project steer the work through issues, comments and reviews.
 An issue that one of them opens is ready at once. Labelling anything
@@ -240,6 +240,15 @@ that, the time runs from then. Making the pull request a draft and ready
 again does not start the time anew, unless 20 events have come since it
 was first ready (the worker reads the latest 20). The label does not pass
 to the issue's sub-issues.
+
+The jobs that lead to that pull request come before all others too, but
+after those of a pull request that merges first already: the issue's own
+jobs, for three days from the label, and the continue jobs of a draft from
+the agent that closes the issue. Work is otherwise the last job that a
+worker picks, so the change would wait behind everything else while the
+others go on merging what it must then follow. This holds nothing back: the
+other pull requests stay out of the merge queue only once the pull request
+is ready for review.
 
 On an issue the label counts from a maintainer in `maintainers`, and from
 an App in `apps` that opened the issue with the label, as a workflow does
@@ -437,8 +446,9 @@ place in the merge queue, and for an issue the states of its blockers,
 sub-issues and closing pull requests and who labelled it.
 
 It reads no claims and writes nothing. It costs what a survey costs, and
-one point more if an open pull request closes an issue labelled
-`merge-first`: who labelled the issue is then asked once for each side.
+one point more if an issue labelled `merge-first` needs a job or an open
+pull request closes it: who labelled the issue is then asked once for each
+side.
 
 ### Configuration
 

@@ -64,10 +64,21 @@ func (c candidate) key() string {
 }
 
 // candidates returns the items that need a job, in the order in which to
-// pick them: the pull request that merges first, if there is one, then by
-// job, then oldest first.
+// pick them: the pull request that merges first, if there is one, then the
+// items whose jobs lead to one (see leads), then by job, then oldest first.
 func candidates(items []Item, c *Config) []candidate {
-	f := first(items, c, time.Now())
+	now := time.Now()
+	f := first(items, c, now)
+	// 0 for the pull request that merges first, 1 for what leads to one.
+	rank := func(a candidate) int {
+		switch {
+		case f != 0 && a.Number == f:
+			return 0
+		case leads(a.Item, now):
+			return 1
+		}
+		return 2
+	}
 	var out []candidate
 	for _, it := range items {
 		if job, why := next(it, c, f); job != "" {
@@ -75,11 +86,8 @@ func candidates(items []Item, c *Config) []candidate {
 		}
 	}
 	slices.SortStableFunc(out, func(a, b candidate) int {
-		if af, bf := f != 0 && a.Number == f, f != 0 && b.Number == f; af != bf {
-			if af {
-				return -1
-			}
-			return 1
+		if ar, br := rank(a), rank(b); ar != br {
+			return ar - br
 		}
 		return slices.Index(order, a.job) - slices.Index(order, b.job)
 	})
